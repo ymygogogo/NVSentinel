@@ -114,27 +114,31 @@ type ExternalRemediationRequestReconciler struct {
 	Recorder record.EventRecorder
 }
 
+// labelValueUnknown is the fallback for Prometheus label values when the ExtRR
+// spec is incomplete. Post-admission this should not happen, but the metric
+// path tolerates it rather than panicking.
+const labelValueUnknown = "unknown"
+
 // recommendedActionLabel produces a stable Prometheus label value identifying
-// the action that triggered this ExtRR. Falls back to "unknown" if the spec
-// hasn't been populated yet — this should not happen post-admission but the
-// metric path tolerates it rather than panicking.
+// the action that triggered this ExtRR.
 func recommendedActionLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
 	if extrrObj.Spec == nil || extrrObj.Spec.HealthEvent == nil {
-		return "unknown"
+		return labelValueUnknown
 	}
 
 	if name := model.GetEffectiveActionName(extrrObj.Spec.HealthEvent); name != "" {
 		return name
 	}
 
-	return "unknown"
+	return labelValueUnknown
 }
 
 // errNodeLabel returns the node-name label value for ExtRR metrics, defaulting
-// to "unknown" when the spec is incomplete (matches recommendedActionLabel).
+// to labelValueUnknown when the spec is incomplete (matches
+// recommendedActionLabel).
 func errNodeLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
 	if extrrObj.Spec == nil || extrrObj.Spec.HealthEvent == nil || extrrObj.Spec.HealthEvent.NodeName == "" {
-		return "unknown"
+		return labelValueUnknown
 	}
 
 	return extrrObj.Spec.HealthEvent.NodeName
@@ -153,9 +157,8 @@ func (r *ExternalRemediationRequestReconciler) emitEvent(
 	r.Recorder.Event(extrrObj, eventType, reason, message)
 }
 
-//nolint:lll // kubebuilder RBAC markers must stay on one line
-// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=get;list;watch;update;patch //nolint:lll
+// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/status,verbs=get;update;patch //nolint:lll
 // +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;patch
 
@@ -204,7 +207,9 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 // once, subsequent reconciles fall through to the dispatcher; conditions
 // written by the external system (e.g. ExternalRemediationComplete=True) are
 // never overwritten, because needsInitialization only checks for *presence*.
-func (r *ExternalRemediationRequestReconciler) needsInitialization(extrrObj *nvsentinelv1.ExternalRemediationRequest) bool {
+func (r *ExternalRemediationRequestReconciler) needsInitialization(
+	extrrObj *nvsentinelv1.ExternalRemediationRequest,
+) bool {
 	if !controllerutil.ContainsFinalizer(extrrObj, ExternalRemediationFinalizer) {
 		return true
 	}
@@ -357,6 +362,10 @@ const nodeMissingRequeue = 30 * time.Second
 //   - Forbidden — persistent RBAC denial. Transition to False so the operator sees the failure;
 //     controller-runtime backoff cannot fix RBAC.
 //   - Any other apiserver error — transient. Return the error so controller-runtime backs off.
+//nolint:cyclop // The apply path's branches each handle a distinct
+// failure mode of the node patch (missing node, foreign taint, already
+// applied, RBAC forbidden) and the explicit dispatch is more readable
+// than splitting into half-a-dozen tiny helpers that all share state.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -598,6 +607,10 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 // Short-circuits when there's nothing to remove so re-reconciles in either
 // cleanup branch do not generate spurious PATCHes. The Node also vanishing
 // (e.g. terminated by an external system) is treated as already-clean.
+//nolint:cyclop // The cleanup path's branches each handle a distinct
+// drift case (foreign taint at our key, taint already absent, missing
+// node, RBAC forbidden) and the explicit dispatch is more readable
+// than splitting into helpers that share the same node-and-error state.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
@@ -812,6 +825,11 @@ func (r *ExternalRemediationRequestReconciler) patchStatusConditions(
 // Kubernetes events to the ExtRR object (visible via `kubectl describe err`).
 func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
+		// nolint:staticcheck // SA1019: GetEventRecorderFor returns the
+		// core/v1 events recorder that all sibling reconcilers in this
+		// package use (RebootNode, TerminateNode, GPUReset). Migrating
+		// to the new events.k8s.io/v1 API is a project-wide change
+		// tracked separately.
 		r.Recorder = mgr.GetEventRecorderFor("externalremediationrequest-controller")
 	}
 

@@ -24,8 +24,8 @@
 package condition
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )

@@ -51,7 +51,8 @@ var (
 	// phase=created       : reconciler initialised a fresh ExtRR (added the finalizer and Unknown conditions).
 	// phase=released      : NVSentinelOwnershipReleased transitioned (apply path). result=success|failure.
 	// phase=external_response : ExternalRemediationComplete observed True or False. result=success|failure.
-	// phase=closed        : cleanup ran (taint+label removed). result=success (Complete=True) | operator_deleted (kubectl delete err).
+	// phase=closed        : cleanup ran (taint+label removed). result=success
+	//                        (Complete=True) | operator_deleted (kubectl delete extrr).
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nvsentinel_external_remediation_err_total",
 		Help: "Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome.",
