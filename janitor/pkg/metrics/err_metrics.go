@@ -19,12 +19,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-// ExtRR observability metric series. The full schema is specified by ADR-040's
-// Observability section and JSC-98's acceptance criteria. The names share the
+// ExtRR observability metrics. All three share the
 // nvsentinel_external_remediation_ namespace so a single grep against the
-// metrics endpoint surfaces the entire ExtRR signal set.
+// metrics endpoint surfaces the entire signal set. Schema per ADR-040.
 
-// ExtRR phase labels for err_total.
+// Phase label values for ExtRRTotal.
 const (
 	ExtRRPhaseCreated          = "created"
 	ExtRRPhaseReleased         = "released"
@@ -32,44 +31,40 @@ const (
 	ExtRRPhaseClosed           = "closed"
 )
 
-// ExtRR result labels for err_total / err_age_seconds.
+// Result label values for ExtRRTotal / ExtRRAgeSeconds.
 const (
 	ExtRRResultSuccess         = "success"
 	ExtRRResultFailure         = "failure"
 	ExtRRResultOperatorDeleted = "operator_deleted"
 )
 
-// ExtRR open-state labels for err_open.
+// Open-state label values for ExtRROpen.
 const (
 	ExtRROpenStateAwaiting = "awaiting"
 	ExtRROpenStateFailed   = "failed"
 )
 
 var (
-	// ExtRRTotal counts ExtRR lifecycle transitions.
+	// ExtRRTotal counts lifecycle transitions:
 	//
-	// phase=created       : reconciler initialised a fresh ExtRR (added the finalizer and Unknown conditions).
-	// phase=released      : NVSentinelOwnershipReleased transitioned (apply path). result=success|failure.
-	// phase=external_response : ExternalRemediationComplete observed True or False. result=success|failure.
-	// phase=closed        : cleanup ran (taint+label removed). result=success
-	//                        (Complete=True) | operator_deleted (kubectl delete extrr).
+	//   created           — reconciler initialised a fresh ExtRR.
+	//   released          — NVSentinelOwnershipReleased flipped. result=success|failure.
+	//   external_response — ExternalRemediationComplete observed. result=success|failure.
+	//   closed            — cleanup ran. result=success (Complete=True) | operator_deleted.
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nvsentinel_external_remediation_err_total",
 		Help: "Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome.",
 	}, []string{"phase", "result"})
 
-	// ExtRROpen tracks the number of currently-open ERRs, partitioned by the
-	// substate they're sitting in (awaiting external response vs. external
-	// reported failure but operator hasn't intervened yet).
+	// ExtRROpen tracks currently-open ERRs by substate (awaiting external
+	// response vs. external reported failure but operator hasn't acted).
 	ExtRROpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nvsentinel_external_remediation_err_open",
 		Help: "Currently-open ExternalRemediationRequest objects by node, action, and substate.",
 	}, []string{"node", "recommended_action", "state"})
 
-	// ExtRRAgeSeconds records how long an ExtRR was open (creation to close)
-	// labeled by which cleanup path closed it. Bucket choice spans seconds
-	// (a healthy auto-cleanup) through hours (an ExtRR that an operator forgot
-	// about).
+	// ExtRRAgeSeconds records creation-to-close age. Buckets span seconds
+	// (healthy auto-cleanup) through hours (operator forgot about it).
 	ExtRRAgeSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "nvsentinel_external_remediation_err_age_seconds",
 		Help:    "Age of an ExternalRemediationRequest at close time.",
@@ -77,8 +72,7 @@ var (
 	}, []string{"recommended_action", "result"})
 )
 
-// IncExtRRTotal increments the ExtRR lifecycle counter for the given phase /
-// result. result may be "" for phase=created (no per-result split).
+// IncExtRRTotal increments ExtRRTotal. result may be "" for phase=created.
 func (m *ActionMetrics) IncExtRRTotal(phase, result string) {
 	ExtRRTotal.With(prometheus.Labels{
 		"phase":  phase,
@@ -86,10 +80,9 @@ func (m *ActionMetrics) IncExtRRTotal(phase, result string) {
 	}).Inc()
 }
 
-// AdjustExtRROpen changes the open-ExtRR gauge for the (node, action, state)
-// triple by delta. delta=+1 when the ExtRR enters the state, delta=-1 when it
-// leaves. The reconciler keeps the bookkeeping in one place per branch to
-// avoid double-counting across re-reconciles.
+// AdjustExtRROpen adjusts ExtRROpen by delta (+1 entering the state, -1
+// leaving). The reconciler keeps emission in one place per branch to avoid
+// double-counting across re-reconciles.
 func (m *ActionMetrics) AdjustExtRROpen(node, recommendedAction, state string, delta float64) {
 	ExtRROpen.With(prometheus.Labels{
 		"node":               node,
@@ -98,8 +91,6 @@ func (m *ActionMetrics) AdjustExtRROpen(node, recommendedAction, state string, d
 	}).Add(delta)
 }
 
-// ObserveExtRRAge records the age of an ExtRR that just closed via the named
-// result path.
 func (m *ActionMetrics) ObserveExtRRAge(recommendedAction, result string, ageSeconds float64) {
 	ExtRRAgeSeconds.With(prometheus.Labels{
 		"recommended_action": recommendedAction,
@@ -107,9 +98,8 @@ func (m *ActionMetrics) ObserveExtRRAge(recommendedAction, result string, ageSec
 	}).Observe(ageSeconds)
 }
 
-// registerExtRRMetrics registers the ExtRR observables with the controller-runtime
-// metrics registry. Called from NewActionMetrics so the standard janitor
-// metrics-server endpoint exposes them without further wiring.
+// registerExtRRMetrics registers the series with controller-runtime's metrics
+// registry. Called from NewActionMetrics so the standard endpoint exposes them.
 func registerExtRRMetrics() {
 	metrics.Registry.MustRegister(
 		ExtRRTotal,

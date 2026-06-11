@@ -1083,7 +1083,7 @@ func snapshotConditions(extrrObj *nvsentinelv1.ExternalRemediationRequest) strin
 	return strings.Join(parts, "|")
 }
 
-var _ = Describe("ExternalRemediationRequest Controller observability (JSC-98)", func() {
+var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 	var (
 		ctx context.Context
 		r   *ExternalRemediationRequestReconciler
