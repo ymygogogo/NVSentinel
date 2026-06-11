@@ -157,8 +157,10 @@ func (r *ExternalRemediationRequestReconciler) emitEvent(
 	r.Recorder.Event(extrrObj, eventType, reason, message)
 }
 
-// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=get;list;watch;update;patch //nolint:lll
-// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/status,verbs=get;update;patch //nolint:lll
+//nolint:lll // kubebuilder RBAC marker must stay on one line
+// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests,verbs=get;list;watch;update;patch
+//nolint:lll
+// +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nvsentinel.dgxc.nvidia.com,resources=externalremediationrequests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;patch
 
@@ -174,6 +176,7 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 	}
 
 	annotations := err.GetAnnotations()
+
 	ctx, span := tracing.StartSpanWithLinkFromTraceContext(
 		ctx,
 		annotations[tracing.TraceIDAnnotationKey],
@@ -302,8 +305,7 @@ func (r *ExternalRemediationRequestReconciler) setInitialConditions(
 		return false, nil
 	}
 
-	patched, err := r.patchStatusConditions(ctx, extrrObj, conditions)
-	return patched, err
+	return r.patchStatusConditions(ctx, extrrObj, conditions)
 }
 
 // dispatch is the six-branch state machine described in ADR-040. Branch 1
@@ -362,10 +364,11 @@ const nodeMissingRequeue = 30 * time.Second
 //   - Forbidden — persistent RBAC denial. Transition to False so the operator sees the failure;
 //     controller-runtime backoff cannot fix RBAC.
 //   - Any other apiserver error — transient. Return the error so controller-runtime backs off.
-//nolint:cyclop // The apply path's branches each handle a distinct
-// failure mode of the node patch (missing node, foreign taint, already
-// applied, RBAC forbidden) and the explicit dispatch is more readable
-// than splitting into half-a-dozen tiny helpers that all share state.
+// The cyclomatic complexity is driven by the explicit dispatch over the
+// distinct failure modes above; splitting into half-a-dozen tiny helpers
+// that all share state would read worse than the inline form.
+//
+//nolint:cyclop
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -409,6 +412,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 
 			msg := fmt.Sprintf("release taint %s=%s and managed=false label already present on node %q",
 				ReleaseTaintKey, extrrObj.Name, nodeName)
+
 			return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 		}
 		// Taint is right but the label is missing — patch only the label below.
@@ -446,6 +450,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 
 	msg := fmt.Sprintf("applied release taint %s=%s and managed=false label to node %q",
 		ReleaseTaintKey, extrrObj.Name, nodeName)
+
 	return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 }
 
@@ -607,10 +612,13 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 // Short-circuits when there's nothing to remove so re-reconciles in either
 // cleanup branch do not generate spurious PATCHes. The Node also vanishing
 // (e.g. terminated by an external system) is treated as already-clean.
-//nolint:cyclop // The cleanup path's branches each handle a distinct
-// drift case (foreign taint at our key, taint already absent, missing
-// node, RBAC forbidden) and the explicit dispatch is more readable
-// than splitting into helpers that share the same node-and-error state.
+//
+// The cyclomatic complexity is driven by the explicit dispatch over drift
+// cases (foreign taint at our key, taint already absent, missing node,
+// RBAC forbidden); splitting into helpers that share the same
+// node-and-error state would read worse than the inline form.
+//
+//nolint:cyclop
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
