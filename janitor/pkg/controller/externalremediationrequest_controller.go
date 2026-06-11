@@ -364,6 +364,7 @@ const nodeMissingRequeue = 30 * time.Second
 //   - Forbidden — persistent RBAC denial. Transition to False so the operator sees the failure;
 //     controller-runtime backoff cannot fix RBAC.
 //   - Any other apiserver error — transient. Return the error so controller-runtime backs off.
+//
 // The cyclomatic complexity is driven by the explicit dispatch over the
 // distinct failure modes above; splitting into half-a-dozen tiny helpers
 // that all share state would read worse than the inline form.
@@ -662,6 +663,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 
 	if _, ok := nodeToUpdate.Labels[managed.ManagedLabelKey]; ok {
 		delete(nodeToUpdate.Labels, managed.ManagedLabelKey)
+
 		changed = true
 	}
 
