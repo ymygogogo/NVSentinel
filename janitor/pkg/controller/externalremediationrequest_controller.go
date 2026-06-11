@@ -115,7 +115,7 @@ func recommendedActionLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) s
 	return labelValueUnknown
 }
 
-func errNodeLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
+func extrrNodeLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
 	if he := healthEventOf(extrrObj); he != nil && he.NodeName != "" {
 		return he.NodeName
 	}
@@ -146,12 +146,12 @@ func (r *ExternalRemediationRequestReconciler) emitEvent(
 // the originating health-monitor trace via the trace-id / span-id annotations
 // fault-remediation stamps on the ExtRR.
 func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var err nvsentinelv1.ExternalRemediationRequest
-	if e := r.Get(ctx, req.NamespacedName, &err); e != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(e)
+	var extrr nvsentinelv1.ExternalRemediationRequest
+	if err := r.Get(ctx, req.NamespacedName, &extrr); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	annotations := err.GetAnnotations()
+	annotations := extrr.GetAnnotations()
 
 	ctx, span := tracing.StartSpanWithLinkFromTraceContext(
 		ctx,
@@ -162,18 +162,18 @@ func (r *ExternalRemediationRequestReconciler) Reconcile(ctx context.Context, re
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("err.name", err.Name),
-		attribute.String("err.namespace", err.Namespace),
-		attribute.String("err.node", errNodeLabel(&err)),
-		attribute.String("err.recommended_action", recommendedActionLabel(&err)),
+		attribute.String("extrr.name", extrr.Name),
+		attribute.String("extrr.namespace", extrr.Namespace),
+		attribute.String("extrr.node", extrrNodeLabel(&extrr)),
+		attribute.String("extrr.recommended_action", recommendedActionLabel(&extrr)),
 	)
 
-	if r.needsInitialization(&err) {
-		span.SetAttributes(attribute.String("err.branch", "init"))
-		return r.reconcileInitialize(ctx, &err)
+	if r.needsInitialization(&extrr) {
+		span.SetAttributes(attribute.String("extrr.branch", "init"))
+		return r.reconcileInitialize(ctx, &extrr)
 	}
 
-	result, dispatchErr := r.dispatch(ctx, &err)
+	result, dispatchErr := r.dispatch(ctx, &extrr)
 	if dispatchErr != nil {
 		tracing.RecordError(span, dispatchErr)
 	}
@@ -342,7 +342,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "target node not found; requeueing",
-				"err", extrrObj.Name, "node", nodeName, "requeueAfter", nodeMissingRequeue)
+				"extrr", extrrObj.Name, "node", nodeName, "requeueAfter", nodeMissingRequeue)
 
 			return ctrl.Result{RequeueAfter: nodeMissingRequeue}, nil
 		}
@@ -356,7 +356,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 				"node %q already tainted by ExternalRemediationRequest %q; another ExtRR owns this node",
 				nodeName, existing.Value)
 			slog.WarnContext(ctx, "release taint drift detected",
-				"err", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
+				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
 
 			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
 		}
@@ -364,7 +364,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 		// then transition the condition without issuing a redundant PATCH.
 		if node.Labels[managed.ManagedLabelKey] == managed.ManagedLabelValueFalse {
 			slog.InfoContext(ctx, "release taint and managed=false label already in place; transitioning condition",
-				"err", extrrObj.Name, "node", nodeName)
+				"extrr", extrrObj.Name, "node", nodeName)
 
 			msg := fmt.Sprintf("release taint %s=%s and managed=false label already present on node %q",
 				ReleaseTaintKey, extrrObj.Name, nodeName)
@@ -393,7 +393,8 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	if err := r.Patch(ctx, nodeToUpdate, client.StrategicMergeFrom(&node)); err != nil {
 		if apierrors.IsForbidden(err) {
 			msg := fmt.Sprintf("forbidden to patch node %q: %v", nodeName, err)
-			slog.ErrorContext(ctx, "release taint apply forbidden by RBAC", "err", extrrObj.Name, "node", nodeName, "error", err)
+			slog.ErrorContext(ctx, "release taint apply forbidden by RBAC",
+				"extrr", extrrObj.Name, "node", nodeName, "error", err)
 
 			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
 		}
@@ -402,7 +403,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	}
 
 	slog.InfoContext(ctx, "applied release taint and managed=false label to node",
-		"err", extrrObj.Name, "node", nodeName)
+		"extrr", extrrObj.Name, "node", nodeName)
 
 	msg := fmt.Sprintf("applied release taint %s=%s and managed=false label to node %q",
 		ReleaseTaintKey, extrrObj.Name, nodeName)
@@ -426,7 +427,7 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	}
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultSuccess)
-	metrics.GlobalMetrics.AdjustExtRROpen(errNodeLabel(extrrObj), recommendedActionLabel(extrrObj),
+	metrics.GlobalMetrics.AdjustExtRROpen(extrrNodeLabel(extrrObj), recommendedActionLabel(extrrObj),
 		metrics.ExtRROpenStateAwaiting, 1)
 	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintApplied, message)
 
@@ -456,7 +457,7 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 
 // reconcileCleanupAfterComplete (branch 4) removes the taint+label after the
 // external system reports success. The ExtRR stays as a historical record
-// (finalizer still attached); TTL or `kubectl delete err` removes it later.
+// (finalizer still attached); TTL or `kubectl delete extrr` removes it later.
 // Observability fires only on the pass that actually mutates state.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
@@ -477,7 +478,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 	return ctrl.Result{}, nil
 }
 
-// reconcileCleanupOnDeletion (branch 2) runs when `kubectl delete err` sets
+// reconcileCleanupOnDeletion (branch 2) runs when `kubectl delete extrr` sets
 // the DeletionTimestamp. Cleanup PATCH then finalizer removal so the
 // apiserver can garbage-collect the ExtRR. Idempotent against branch-4
 // post-True state — if cleanup already ran, we skip straight to the
@@ -512,7 +513,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	}
 
 	slog.InfoContext(ctx, "removed cleanup finalizer; ExternalRemediationRequest will be garbage-collected",
-		"err", extrrObj.Name)
+		"extrr", extrrObj.Name)
 
 	return ctrl.Result{}, nil
 }
@@ -523,7 +524,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 func (r *ExternalRemediationRequestReconciler) recordClose(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest, result, closeReason string,
 ) {
-	node := errNodeLabel(extrrObj)
+	node := extrrNodeLabel(extrrObj)
 	action := recommendedActionLabel(extrrObj)
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseClosed, result)
@@ -563,7 +564,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.InfoContext(ctx, "target Node already gone; nothing to clean up",
-				"err", extrrObj.Name, "node", nodeName)
+				"extrr", extrrObj.Name, "node", nodeName)
 
 			return false, nil
 		}
@@ -583,7 +584,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 			// Drift: another ExtRR claims the taint. Leave it alone — that ExtRR's
 			// own cleanup path will remove it. Logging only; not an error.
 			slog.WarnContext(ctx, "release taint owned by a different ExtRR; leaving in place during cleanup",
-				"err", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
+				"extrr", extrrObj.Name, "node", nodeName, "existing_owner", existing.Value)
 		}
 	}
 
@@ -602,7 +603,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	}
 
 	slog.InfoContext(ctx, "removed release taint and managed label from node",
-		"err", extrrObj.Name, "node", nodeName)
+		"extrr", extrrObj.Name, "node", nodeName)
 
 	return true, nil
 }
@@ -632,7 +633,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 
 	slog.InfoContext(ctx,
 		"external system reported failure; node remains released until operator deletes ExtRR or external system retries",
-		"err", extrrObj.Name,
+		"extrr", extrrObj.Name,
 		"node", nodeName,
 		"external_reason", reason,
 		"external_message", message,
@@ -745,23 +746,23 @@ func (r *ExternalRemediationRequestReconciler) SetupWithManager(mgr ctrl.Manager
 		For(&nvsentinelv1.ExternalRemediationRequest{}).
 		Watches(
 			&corev1.Node{},
-			handler.EnqueueRequestsFromMapFunc(r.mapNodeToERRs),
+			handler.EnqueueRequestsFromMapFunc(r.mapNodeToExtRRs),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
 		Named("externalremediationrequest").
 		Complete(r)
 }
 
-// mapNodeToERRs enqueues every ExtRR whose spec.healthEvent.nodeName matches
+// mapNodeToExtRRs enqueues every ExtRR whose spec.healthEvent.nodeName matches
 // the given Node.
-func (r *ExternalRemediationRequestReconciler) mapNodeToERRs(ctx context.Context, obj client.Object) []ctrl.Request {
+func (r *ExternalRemediationRequestReconciler) mapNodeToExtRRs(ctx context.Context, obj client.Object) []ctrl.Request {
 	node, ok := obj.(*corev1.Node)
 	if !ok {
 		return nil
 	}
 
-	var errs nvsentinelv1.ExternalRemediationRequestList
-	if err := r.List(ctx, &errs); err != nil {
+	var extrrs nvsentinelv1.ExternalRemediationRequestList
+	if err := r.List(ctx, &extrrs); err != nil {
 		slog.ErrorContext(ctx, "listing ExternalRemediationRequests for Node mapping",
 			"node", node.Name, "error", err)
 
@@ -770,11 +771,11 @@ func (r *ExternalRemediationRequestReconciler) mapNodeToERRs(ctx context.Context
 
 	var requests []ctrl.Request
 
-	for i := range errs.Items {
-		e := &errs.Items[i]
-		if e.Spec != nil && e.Spec.HealthEvent != nil && e.Spec.HealthEvent.NodeName == node.Name {
+	for i := range extrrs.Items {
+		extrr := &extrrs.Items[i]
+		if extrr.Spec != nil && extrr.Spec.HealthEvent != nil && extrr.Spec.HealthEvent.NodeName == node.Name {
 			requests = append(requests, ctrl.Request{
-				NamespacedName: client.ObjectKey{Name: e.Name, Namespace: e.Namespace},
+				NamespacedName: client.ObjectKey{Name: extrr.Name, Namespace: extrr.Namespace},
 			})
 		}
 	}

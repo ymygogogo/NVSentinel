@@ -56,7 +56,7 @@ var (
 		Help: "Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome.",
 	}, []string{"phase", "result"})
 
-	// ExtRROpen tracks currently-open ERRs by substate (awaiting external
+	// ExtRROpen tracks currently-open ExtRRs by substate (awaiting external
 	// response vs. external reported failure but operator hasn't acted).
 	ExtRROpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nvsentinel_external_remediation_err_open",
