@@ -88,27 +88,14 @@ type ExternalRemediationRequestReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// labelValueUnknown is the metric-label fallback when the spec is incomplete
-// (admission catches this normally).
+// labelValueUnknown is the metric-label fallback when no action mapping is
+// available. The validating webhook guarantees Spec.HealthEvent.NodeName is
+// populated so the node label always has a concrete value; this fallback
+// only kicks in for the recommendedAction label when model lookup yields "".
 const labelValueUnknown = "unknown"
 
-// healthEventOf returns the ExtRR's HealthEvent or nil. Used to centralise
-// the spec-may-be-nil dance.
-func healthEventOf(extrrObj *nvsentinelv1.ExternalRemediationRequest) *protos.HealthEvent {
-	if extrrObj.Spec == nil {
-		return nil
-	}
-
-	return extrrObj.Spec.HealthEvent
-}
-
 func recommendedActionLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
-	he := healthEventOf(extrrObj)
-	if he == nil {
-		return labelValueUnknown
-	}
-
-	if name := model.GetEffectiveActionName(he); name != "" {
+	if name := model.GetEffectiveActionName(extrrObj.Spec.HealthEvent); name != "" {
 		return name
 	}
 
@@ -116,11 +103,7 @@ func recommendedActionLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) s
 }
 
 func extrrNodeLabel(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
-	if he := healthEventOf(extrrObj); he != nil && he.NodeName != "" {
-		return he.NodeName
-	}
-
-	return labelValueUnknown
+	return extrrObj.Spec.HealthEvent.NodeName
 }
 
 // emitEvent tolerates a nil Recorder so tests can construct the reconciler
@@ -316,10 +299,11 @@ const nodeMissingRequeue = 30 * time.Second
 // single strategic-merge PATCH on the target Node (release taint +
 // managed=false label) then transitions NVSentinelOwnershipReleased=True.
 //
-// Failure modes per ADR-040: empty nodeName / drift (taint at our key with a
-// different value) / RBAC forbidden → persistent failure (transition to
-// False). Node not found → transient, requeue. Taint already at our value →
-// idempotent fast path.
+// Failure modes per ADR-040: drift (taint at our key with a different value)
+// / RBAC forbidden → persistent failure (transition to False). Node not
+// found → transient, requeue. Taint already at our value → idempotent fast
+// path. spec.healthEvent.nodeName is guaranteed non-empty by the validating
+// webhook.
 //
 // all share node-and-extrr state; the inline switch reads better than a
 // fan-out into single-use helpers.
@@ -328,15 +312,7 @@ const nodeMissingRequeue = 30 * time.Second
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
-	nodeName := ""
-	if he := healthEventOf(extrrObj); he != nil {
-		nodeName = he.NodeName
-	}
-
-	if nodeName == "" {
-		msg := "ExternalRemediationRequest.spec.healthEvent.nodeName is empty; cannot apply release taint"
-		return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, msg)
-	}
+	nodeName := extrrObj.Spec.HealthEvent.NodeName
 
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
@@ -550,15 +526,7 @@ func (r *ExternalRemediationRequestReconciler) recordClose(
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
-	nodeName := ""
-	if he := healthEventOf(extrrObj); he != nil {
-		nodeName = he.NodeName
-	}
-
-	if nodeName == "" {
-		// Nothing to clean if we never knew which Node to release in the first place.
-		return false, nil
-	}
+	nodeName := extrrObj.Spec.HealthEvent.NodeName
 
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
@@ -620,11 +588,6 @@ func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 ) (ctrl.Result, error) {
 	complete := meta.FindStatusCondition(statusConditions(extrrObj), ConditionExternalRemediationComplete)
 
-	nodeName := ""
-	if he := healthEventOf(extrrObj); he != nil {
-		nodeName = he.NodeName
-	}
-
 	var reason, message string
 	if complete != nil {
 		reason = complete.Reason
@@ -634,7 +597,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 	slog.InfoContext(ctx,
 		"external system reported failure; node remains released until operator deletes ExtRR or external system retries",
 		"extrr", extrrObj.Name,
-		"node", nodeName,
+		"node", extrrObj.Spec.HealthEvent.NodeName,
 		"external_reason", reason,
 		"external_message", message,
 	)

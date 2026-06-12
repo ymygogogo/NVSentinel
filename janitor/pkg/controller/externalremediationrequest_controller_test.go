@@ -836,19 +836,10 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(released.Reason).To(Equal(reasonInitializing))
 	})
 
-	It("transitions to False when the spec.healthEvent.nodeName is empty", func() {
-		extrrObj := newTestERR("empty-node-err-1", "")
-		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
-		DeferCleanup(deleteERRForCleanup, ctx, r, extrrObj)
-
-		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
-		got := reconcileToSteadyState(ctx, r, key, 3)
-
-		released := findERRCondition(got, ConditionNVSentinelOwnershipReleased)
-		Expect(released.Status).To(Equal("False"))
-		Expect(released.Reason).To(Equal(ReasonReleaseTaintFailed))
-		Expect(released.Message).To(ContainSubstring("nodeName is empty"))
-	})
+	// The empty-nodeName failure mode is enforced by the validating webhook
+	// (see pkg/webhook/v1alpha1) — the apiserver rejects creation of an
+	// ExtRR without spec.healthEvent.nodeName, so the reconciler never sees
+	// one. Exercised in the webhook test suite, not here.
 
 	It("transitions to False when the Node is already tainted by a different ExtRR (drift)", func() {
 		nodeName := "node-drift-1"
