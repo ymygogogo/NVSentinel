@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -57,5 +58,34 @@ func TestInitializeOIDC_DisabledDoesNotReadSecret(t *testing.T) {
 	}
 	if provider != nil {
 		t.Fatalf("provider = %#v, want nil", provider)
+	}
+}
+
+func TestInitializeSinkDefaultsToHTTP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Exporter.Sink.Endpoint = "https://events.example.com"
+
+	eventSink, err := initializeSink(cfg, nil, 1)
+	if err != nil {
+		t.Fatalf("initializeSink() error = %v", err)
+	}
+	if _, ok := eventSink.(*sink.HTTPSink); !ok {
+		t.Fatalf("sink type = %T, want *sink.HTTPSink", eventSink)
+	}
+}
+
+func TestInitializeSinkBuildsKafkaSink(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Exporter.Sink.Type = config.SinkTypeKafka
+	cfg.Exporter.Sink.Kafka.Brokers = []string{"kafka:9092"}
+	cfg.Exporter.Sink.Kafka.Topic = "nvsentinel.health-events"
+
+	eventSink, err := initializeSink(cfg, nil, 1)
+	if err != nil {
+		t.Fatalf("initializeSink() error = %v", err)
+	}
+	defer eventSink.Close(t.Context())
+	if _, ok := eventSink.(*sink.KafkaSink); !ok {
+		t.Fatalf("sink type = %T, want *sink.KafkaSink", eventSink)
 	}
 }

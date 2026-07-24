@@ -53,10 +53,44 @@ type ExporterConfig struct {
 
 type MetadataConfig map[string]string
 
+const (
+	SinkTypeHTTP  = "http"
+	SinkTypeKafka = "kafka"
+)
+
 type SinkConfig struct {
-	Endpoint           string `toml:"endpoint"`
-	Timeout            string `toml:"timeout"`
+	Type               string          `toml:"type"`
+	Endpoint           string          `toml:"endpoint"`
+	Timeout            string          `toml:"timeout"`
+	InsecureSkipVerify bool            `toml:"insecure_skip_verify"`
+	Kafka              KafkaSinkConfig `toml:"kafka"`
+}
+
+type KafkaSinkConfig struct {
+	Brokers      []string        `toml:"brokers"`
+	Topic        string          `toml:"topic"`
+	ClientID     string          `toml:"client_id"`
+	RequiredAcks string          `toml:"required_acks"`
+	Compression  string          `toml:"compression"`
+	BatchTimeout string          `toml:"batch_timeout"`
+	WriteTimeout string          `toml:"write_timeout"`
+	TLS          KafkaTLSConfig  `toml:"tls"`
+	SASL         KafkaSASLConfig `toml:"sasl"`
+}
+
+type KafkaTLSConfig struct {
+	Enabled            bool   `toml:"enabled"`
+	CAFile             string `toml:"ca_file"`
+	CertFile           string `toml:"cert_file"`
+	KeyFile            string `toml:"key_file"`
 	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
+}
+
+type KafkaSASLConfig struct {
+	Enabled      bool   `toml:"enabled"`
+	Mechanism    string `toml:"mechanism"`
+	Username     string `toml:"username"`
+	PasswordFile string `toml:"password_file"`
 }
 
 type OIDCConfig struct {
@@ -126,6 +160,21 @@ type MissingPodContextAlertConfig struct {
 	WebhookURL string `toml:"webhook_url"`
 	Timeout    string `toml:"timeout"`
 	MaxRetries int    `toml:"max_retries"`
+}
+
+func (c *SinkConfig) SinkType() string {
+	if c.Type == "" {
+		return SinkTypeHTTP
+	}
+	return c.Type
+}
+
+func (c *KafkaSinkConfig) GetBatchTimeout() time.Duration {
+	return parseDurationOrDefault(c.BatchTimeout, 10*time.Millisecond, "kafka batch timeout")
+}
+
+func (c *KafkaSinkConfig) GetWriteTimeout() time.Duration {
+	return parseDurationOrDefault(c.WriteTimeout, defaultSinkTimeout, "kafka write timeout")
 }
 
 func (c *SinkConfig) GetTimeout() time.Duration {
@@ -240,8 +289,18 @@ func (c *Config) Validate() error {
 		c.Exporter.ClientName = "event-exporter"
 	}
 
-	if c.Exporter.Sink.Endpoint == "" {
-		return fmt.Errorf("sink endpoint is required")
+	sinkType := c.Exporter.Sink.SinkType()
+	switch sinkType {
+	case SinkTypeHTTP:
+		if c.Exporter.Sink.Endpoint == "" {
+			return fmt.Errorf("sink endpoint is required")
+		}
+	case SinkTypeKafka:
+		if err := validateKafkaSink(c.Exporter.Sink.Kafka); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported sink type %q", sinkType)
 	}
 
 	if c.Exporter.OIDC.IsEnabled() {
@@ -274,6 +333,47 @@ func (c *Config) Validate() error {
 		if c.Exporter.Enrichment.PodMetadata.Enabled && c.Exporter.Enrichment.PodMetadata.HistoricalSource == "prometheus" && c.Exporter.Enrichment.Prometheus.Enabled && c.Exporter.Enrichment.Prometheus.Endpoint == "" {
 			return fmt.Errorf("prometheus endpoint is required when prometheus enrichment is enabled")
 		}
+	}
+
+	return nil
+}
+
+func validateKafkaSink(cfg KafkaSinkConfig) error {
+	if len(cfg.Brokers) == 0 {
+		return fmt.Errorf("kafka brokers are required")
+	}
+	if cfg.Topic == "" {
+		return fmt.Errorf("kafka topic is required")
+	}
+
+	switch cfg.RequiredAcks {
+	case "", "none", "leader", "all":
+	default:
+		return fmt.Errorf("unsupported kafka required_acks %q", cfg.RequiredAcks)
+	}
+
+	switch cfg.Compression {
+	case "", "none", "gzip", "snappy", "lz4", "zstd":
+	default:
+		return fmt.Errorf("unsupported kafka compression %q", cfg.Compression)
+	}
+
+	if cfg.SASL.Enabled {
+		switch cfg.SASL.Mechanism {
+		case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
+		default:
+			return fmt.Errorf("unsupported kafka sasl mechanism %q", cfg.SASL.Mechanism)
+		}
+		if cfg.SASL.Username == "" {
+			return fmt.Errorf("kafka sasl username is required")
+		}
+		if cfg.SASL.PasswordFile == "" {
+			return fmt.Errorf("kafka sasl password_file is required")
+		}
+	}
+
+	if (cfg.TLS.CertFile == "") != (cfg.TLS.KeyFile == "") {
+		return fmt.Errorf("kafka tls cert_file and key_file must be configured together")
 	}
 
 	return nil

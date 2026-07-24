@@ -63,13 +63,11 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to initialize OIDC: %w", err)
 	}
 
-	httpSink := sink.NewHTTPSink(
-		cfg.Exporter.Sink.Endpoint,
-		cfg.Exporter.Sink.GetTimeout(),
-		tokenProvider,
-		cfg.Exporter.Sink.InsecureSkipVerify,
-		params.Workers,
-	)
+	eventSink, err := initializeSink(cfg, tokenProvider, params.Workers)
+	if err != nil {
+		slog.Error("Failed to initialize sink", "error", err)
+		return nil, fmt.Errorf("failed to initialize sink: %w", err)
+	}
 
 	cloudEventsTransformer := transformer.NewCloudEventsTransformer(cfg.Exporter.Metadata)
 
@@ -94,7 +92,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		cloudEventsTransformer,
 		eventEnricher,
 		alerter,
-		httpSink,
+		eventSink,
 		hasResumeToken,
 		params.Workers,
 	)
@@ -104,6 +102,45 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		DatastoreBundle: datastoreBundle,
 		BackfillEnabled: cfg.Exporter.Backfill.Enabled,
 	}, nil
+}
+
+func initializeSink(cfg *config.Config, tokenProvider *auth.TokenProvider, workers int) (sink.EventSink, error) {
+	switch cfg.Exporter.Sink.SinkType() {
+	case config.SinkTypeHTTP:
+		return sink.NewHTTPSink(
+			cfg.Exporter.Sink.Endpoint,
+			cfg.Exporter.Sink.GetTimeout(),
+			tokenProvider,
+			cfg.Exporter.Sink.InsecureSkipVerify,
+			workers,
+		), nil
+	case config.SinkTypeKafka:
+		kafkaCfg := cfg.Exporter.Sink.Kafka
+		return sink.NewKafkaSink(sink.KafkaConfig{
+			Brokers:      kafkaCfg.Brokers,
+			Topic:        kafkaCfg.Topic,
+			ClientID:     kafkaCfg.ClientID,
+			RequiredAcks: kafkaCfg.RequiredAcks,
+			Compression:  kafkaCfg.Compression,
+			BatchTimeout: kafkaCfg.GetBatchTimeout(),
+			WriteTimeout: kafkaCfg.GetWriteTimeout(),
+			TLS: sink.KafkaTLSConfig{
+				Enabled:            kafkaCfg.TLS.Enabled,
+				CAFile:             kafkaCfg.TLS.CAFile,
+				CertFile:           kafkaCfg.TLS.CertFile,
+				KeyFile:            kafkaCfg.TLS.KeyFile,
+				InsecureSkipVerify: kafkaCfg.TLS.InsecureSkipVerify,
+			},
+			SASL: sink.KafkaSASLConfig{
+				Enabled:      kafkaCfg.SASL.Enabled,
+				Mechanism:    kafkaCfg.SASL.Mechanism,
+				Username:     kafkaCfg.SASL.Username,
+				PasswordFile: kafkaCfg.SASL.PasswordFile,
+			},
+		})
+	default:
+		return nil, fmt.Errorf("unsupported sink type %q", cfg.Exporter.Sink.SinkType())
+	}
 }
 
 func loadConfig(configPath string) (*config.Config, error) {

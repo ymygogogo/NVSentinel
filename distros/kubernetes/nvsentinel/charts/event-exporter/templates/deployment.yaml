@@ -120,6 +120,16 @@ spec:
             mountPath: /var/secrets
             readOnly: true
           {{- end }}
+          {{- if and .Values.exporter.sink.kafka.tls.enabled .Values.exporter.sink.kafka.tls.secretName }}
+          - name: kafka-tls
+            mountPath: {{ .Values.exporter.sink.kafka.tls.mountPath | quote }}
+            readOnly: true
+          {{- end }}
+          {{- if and .Values.exporter.sink.kafka.sasl.enabled .Values.exporter.sink.kafka.sasl.secretName }}
+          - name: kafka-sasl
+            mountPath: {{ .Values.exporter.sink.kafka.sasl.mountPath | quote }}
+            readOnly: true
+          {{- end }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
             mountPath: /etc/ssl/client-certs
@@ -180,6 +190,18 @@ spec:
       - name: oidc-secret
         secret:
           secretName: {{ .Values.oidcSecretName }}
+          optional: false
+      {{- end }}
+      {{- if and .Values.exporter.sink.kafka.tls.enabled .Values.exporter.sink.kafka.tls.secretName }}
+      - name: kafka-tls
+        secret:
+          secretName: {{ .Values.exporter.sink.kafka.tls.secretName }}
+          optional: false
+      {{- end }}
+      {{- if and .Values.exporter.sink.kafka.sasl.enabled .Values.exporter.sink.kafka.sasl.secretName }}
+      - name: kafka-sasl
+        secret:
+          secretName: {{ .Values.exporter.sink.kafka.sasl.secretName }}
           optional: false
       {{- end }}
       - name: var-run-vol

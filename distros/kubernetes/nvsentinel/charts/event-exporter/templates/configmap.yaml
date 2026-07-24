@@ -35,9 +35,32 @@ data:
     {{- end }}
 
     [exporter.sink]
+    type = "{{ .Values.exporter.sink.type | default "http" }}"
     endpoint = "{{ .Values.exporter.sink.endpoint }}"
     timeout = "{{ .Values.exporter.sink.timeout }}"
     insecure_skip_verify = {{ .Values.exporter.sink.insecureSkipVerify }}
+
+    [exporter.sink.kafka]
+    brokers = [{{- range $i, $broker := .Values.exporter.sink.kafka.brokers }}{{ if $i }}, {{ end }}"{{ $broker }}"{{- end }}]
+    topic = "{{ .Values.exporter.sink.kafka.topic }}"
+    client_id = "{{ .Values.exporter.sink.kafka.clientId }}"
+    required_acks = "{{ .Values.exporter.sink.kafka.requiredAcks }}"
+    compression = "{{ .Values.exporter.sink.kafka.compression }}"
+    batch_timeout = "{{ .Values.exporter.sink.kafka.batchTimeout }}"
+    write_timeout = "{{ .Values.exporter.sink.kafka.writeTimeout }}"
+
+    [exporter.sink.kafka.tls]
+    enabled = {{ .Values.exporter.sink.kafka.tls.enabled }}
+    ca_file = "{{ .Values.exporter.sink.kafka.tls.caFile }}"
+    cert_file = "{{ .Values.exporter.sink.kafka.tls.certFile }}"
+    key_file = "{{ .Values.exporter.sink.kafka.tls.keyFile }}"
+    insecure_skip_verify = {{ .Values.exporter.sink.kafka.tls.insecureSkipVerify }}
+
+    [exporter.sink.kafka.sasl]
+    enabled = {{ .Values.exporter.sink.kafka.sasl.enabled }}
+    mechanism = "{{ .Values.exporter.sink.kafka.sasl.mechanism }}"
+    username = "{{ .Values.exporter.sink.kafka.sasl.username }}"
+    password_file = "{{ .Values.exporter.sink.kafka.sasl.passwordFile }}"
 
     [exporter.oidc]
     enabled = {{ .Values.exporter.oidc.enabled }}
