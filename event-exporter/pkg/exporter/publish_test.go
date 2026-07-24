@@ -18,12 +18,14 @@ import (
 )
 
 type fakeSink struct {
-	err   error
-	calls int
+	err       error
+	calls     int
+	published []*transformer.CloudEvent
 }
 
-func (f *fakeSink) Publish(context.Context, *transformer.CloudEvent) error {
+func (f *fakeSink) Publish(_ context.Context, event *transformer.CloudEvent) error {
 	f.calls++
+	f.published = append(f.published, event)
 	return f.err
 }
 
@@ -39,6 +41,51 @@ func (r *recordingPublishAlerter) Alert(_ context.Context, alert enrichment.Miss
 	r.calls++
 	r.alerts = append(r.alerts, alert)
 	return r.err
+}
+
+func sourceDocForPublishTest(event *pb.HealthEvent) healthEventSourceDocument {
+	return healthEventSourceDocument{
+		ID:                "63acf0813e9054394e1d167a",
+		CreatedAt:         time.Date(2026, 7, 24, 7, 30, 49, 603674426, time.UTC),
+		HealthEvent:       event,
+		HealthEventStatus: &pb.HealthEventStatus{},
+	}
+}
+
+func TestPublishWithRetryUsesDeterministicSourceDocumentID(t *testing.T) {
+	sink := &fakeSink{}
+	exporter := &HealthEventsExporter{
+		cfg: &config.Config{Exporter: config.ExporterConfig{
+			Metadata: config.MetadataConfig{"cluster": "dks01"},
+			FailureHandling: config.FailureHandlingConfig{
+				MaxRetries:        1,
+				InitialBackoff:    "1ms",
+				MaxBackoff:        "1ms",
+				BackoffMultiplier: 1,
+			},
+		}},
+		transformer: transformer.NewCloudEventsTransformer(map[string]string{"cluster": "dks01"}),
+		sink:        sink,
+	}
+	sourceDoc := sourceDocForPublishTest(&pb.HealthEvent{
+		NodeName:           "gpu-node-1",
+		CheckName:          "MountPointUnavailable",
+		GeneratedTimestamp: timestamppb.New(time.Date(2026, 7, 24, 7, 30, 49, 603674426, time.UTC)),
+	})
+	wantID, err := deterministicEventID(sourceDoc)
+	if err != nil {
+		t.Fatalf("deterministicEventID() error = %v", err)
+	}
+
+	if err := exporter.publishWithRetry(context.Background(), sourceDoc, enrichment.ProcessingModeStream); err != nil {
+		t.Fatalf("publishWithRetry() error = %v, want nil", err)
+	}
+	if sink.calls != 1 {
+		t.Fatalf("sink calls = %d, want 1", sink.calls)
+	}
+	if got := sink.published[0].ID; got != wantID {
+		t.Fatalf("published event ID = %q, want deterministic ID %q", got, wantID)
+	}
 }
 
 func TestPublishWithRetryAlertsWhenSinkRetriesExhausted(t *testing.T) {
@@ -60,11 +107,11 @@ func TestPublishWithRetryAlertsWhenSinkRetriesExhausted(t *testing.T) {
 	}
 
 	eventTime := time.Now().UTC()
-	if err := exporter.publishWithRetry(context.Background(), &pb.HealthEvent{
+	if err := exporter.publishWithRetry(context.Background(), sourceDocForPublishTest(&pb.HealthEvent{
 		NodeName:           "gpu-node-1",
 		CheckName:          "MountPointUnavailable",
 		GeneratedTimestamp: timestamppb.New(eventTime),
-	}, enrichment.ProcessingModeStream); err != nil {
+	}), enrichment.ProcessingModeStream); err != nil {
 		t.Fatalf("publishWithRetry() error = %v, want nil after alerting sink failure", err)
 	}
 	if alerter.calls != 1 {
@@ -94,11 +141,11 @@ func TestPublishWithRetryDoesNotAlertWhenSinkEventuallySucceeds(t *testing.T) {
 	}
 
 	eventTime := time.Now().UTC()
-	if err := exporter.publishWithRetry(context.Background(), &pb.HealthEvent{
+	if err := exporter.publishWithRetry(context.Background(), sourceDocForPublishTest(&pb.HealthEvent{
 		NodeName:           "gpu-node-1",
 		CheckName:          "MountPointUnavailable",
 		GeneratedTimestamp: timestamppb.New(eventTime),
-	}, enrichment.ProcessingModeStream); err != nil {
+	}), enrichment.ProcessingModeStream); err != nil {
 		t.Fatalf("publishWithRetry() error = %v, want nil", err)
 	}
 	if alerter.calls != 0 {
@@ -132,14 +179,14 @@ func TestPublishWithRetryRecordsFaultLastSeenMetric(t *testing.T) {
 	}
 	metrics.FaultLastSeenTimestampSeconds.DeleteLabelValues(labels...)
 
-	if err := exporter.publishWithRetry(context.Background(), &pb.HealthEvent{
+	if err := exporter.publishWithRetry(context.Background(), sourceDocForPublishTest(&pb.HealthEvent{
 		NodeName:           labels[0],
 		CheckName:          labels[1],
 		Agent:              labels[2],
 		IsHealthy:          false,
 		RecommendedAction:  pb.RecommendedAction_CONTACT_SUPPORT,
 		GeneratedTimestamp: timestamppb.New(eventTime),
-	}, enrichment.ProcessingModeStream); err != nil {
+	}), enrichment.ProcessingModeStream); err != nil {
 		t.Fatalf("publishWithRetry() error = %v, want nil", err)
 	}
 
@@ -176,9 +223,9 @@ func TestPublishWithRetryRecordsFaultMetricWithUnknownLabelsAndCurrentTime(t *te
 	metrics.FaultLastSeenTimestampSeconds.DeleteLabelValues(labels...)
 	before := time.Now().UTC().Unix()
 
-	if err := exporter.publishWithRetry(context.Background(), &pb.HealthEvent{
+	if err := exporter.publishWithRetry(context.Background(), sourceDocForPublishTest(&pb.HealthEvent{
 		IsHealthy: true,
-	}, enrichment.ProcessingModeStream); err != nil {
+	}), enrichment.ProcessingModeStream); err != nil {
 		t.Fatalf("publishWithRetry() error = %v, want nil", err)
 	}
 	after := time.Now().UTC().Unix()

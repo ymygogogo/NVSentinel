@@ -225,7 +225,7 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 			return count, ctx.Err()
 		}
 
-		healthEvent, err := e.decodeBackfillEvent(ctx, cursor)
+		sourceDoc, err := e.decodeBackfillEvent(ctx, cursor)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to decode backfill event", "error", err)
 
@@ -241,12 +241,12 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 			continue
 		}
 
-		if healthEvent == nil {
+		if sourceDoc == nil {
 			slog.DebugContext(ctx, "Skipping nil health event")
 			continue
 		}
 
-		if err := e.publishWithRetry(ctx, healthEvent, enrichment.ProcessingModeBackfill); err != nil {
+		if err := e.publishWithRetry(ctx, *sourceDoc, enrichment.ProcessingModeBackfill); err != nil {
 			slog.ErrorContext(ctx, "Failed to publish backfill event", "error", err)
 			tracing.RecordError(span, err)
 			span.AddEvent(
@@ -295,19 +295,24 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 	return count, nil
 }
 
-func (e *HealthEventsExporter) decodeBackfillEvent(ctx context.Context, cursor client.Cursor) (*pb.HealthEvent, error) {
-	var healthEventWithStatus model.HealthEventWithStatus
-	if err := cursor.Decode(&healthEventWithStatus); err != nil {
+func (e *HealthEventsExporter) decodeBackfillEvent(ctx context.Context, cursor client.Cursor) (*healthEventSourceDocument, error) {
+	var record healthEventSourceDocumentRecord
+	if err := cursor.Decode(&record); err != nil {
 		slog.WarnContext(ctx, "Failed to decode event", "error", err)
 		return nil, err
 	}
 
-	if healthEventWithStatus.HealthEvent == nil {
+	sourceDoc, err := sourceDocumentFromRecord(record)
+	if err != nil {
+		return nil, fmt.Errorf("source document: %w", err)
+	}
+
+	if sourceDoc.HealthEvent == nil {
 		slog.DebugContext(ctx, "Skipping nil health event")
 		return nil, nil
 	}
 
-	return healthEventWithStatus.HealthEvent, nil
+	return &sourceDoc, nil
 }
 
 func (e *HealthEventsExporter) waitForRateLimit(
@@ -428,18 +433,40 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, rawEvent client
 		return nil
 	}
 
+	sourceID, err := rawEvent.GetRecordUUID()
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read source document id", "error", err)
+		metrics.TransformErrors.Inc()
+		return fmt.Errorf("source document id: %w", err)
+	}
+
 	traceID := tracing.TraceIDFromMetadata(healthEventWithStatus.HealthEvent.GetMetadata())
 	parentSpanID := tracing.ParentSpanID(healthEventWithStatus.HealthEventStatus.SpanIds, tracing.ServicePlatformConnector)
 
 	ctx, span := tracing.StartSpanWithLinkFromTraceContext(ctx, traceID, parentSpanID, "event_exporter.process_event")
 	defer span.End()
 
-	return e.publishWithRetry(ctx, healthEventWithStatus.HealthEvent, enrichment.ProcessingModeStream)
+	sourceDoc := sourceDocumentFromModel(sourceID, healthEventWithStatus)
+	return e.publishWithRetry(ctx, sourceDoc, enrichment.ProcessingModeStream)
 }
 
-func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.HealthEvent, processingMode string) error {
+func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, sourceDoc healthEventSourceDocument, processingMode string) error {
 	ctx, span := tracing.StartSpan(ctx, "event_exporter.publish_with_retry")
 	defer span.End()
+
+	event := sourceDoc.HealthEvent
+	eventID, eventIDErr := deterministicEventID(sourceDoc)
+	if eventIDErr != nil {
+		tracing.RecordError(span, eventIDErr)
+		span.SetAttributes(
+			attribute.String("event_exporter.error.type", "event_id_error"),
+			attribute.String("event_exporter.error.message", eventIDErr.Error()),
+		)
+		metrics.TransformErrors.Inc()
+		slog.ErrorContext(ctx, "Failed to derive deterministic event id", "error", eventIDErr)
+
+		return fmt.Errorf("derive event id: %w", eventIDErr)
+	}
 
 	cloudEvent, transformErr := e.transformer.Transform(ctx, event)
 	if transformErr != nil {
@@ -453,6 +480,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 
 		return fmt.Errorf("transform event: %w", transformErr)
 	}
+	cloudEvent.ID = eventID
 	recordFaultLastSeenMetric(event)
 
 	if e.enricher != nil {
