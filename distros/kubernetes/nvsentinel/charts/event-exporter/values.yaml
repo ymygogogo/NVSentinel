@@ -14,12 +14,18 @@
 
 replicaCount: 1
 
+nameOverride: ""
+fullnameOverride: ""
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/event-exporter
   pullPolicy: IfNotPresent
   tag: ""
 
 podAnnotations: {}
+
+# Timezone used by the event-exporter process logs.
+timezone: "UTC"
 
 resources:
   limits:
@@ -43,6 +49,10 @@ mongodbStore:
 
 # Event exporter configuration
 exporter:
+  # Unique change stream client name used for resume token storage.
+  # Use a different value for each independent event-exporter deployment.
+  clientName: "event-exporter"
+
   # Metadata configuration
   # Add any custom metadata fields here - they will be included in CloudEvents data.metadata
   metadata:
@@ -61,6 +71,7 @@ exporter:
 
   # OIDC configuration for authentication
   oidc:
+    enabled: false
     tokenUrl: "https://auth.example.com/oauth2/token"
     clientId: "nvsentinel-exporter"
     scope: "events:write"
@@ -92,3 +103,44 @@ exporter:
     maxBackoff: "5m"
     backoffMultiplier: 2.0
 
+
+  # Optional enrichment pipeline for adding Pod business context to exported events.
+  # Disabled by default to preserve existing payloads and RBAC.
+  enrichment:
+    enabled: false
+    failurePolicy: "best_effort" # best_effort | require_pod_context
+    currentCacheMaxEventAge: "5m"
+    clockSkewTolerance: "2m"
+
+    podMetadata:
+      enabled: false
+      realtimeSource: "kubernetes-watch-cache"
+      realtimeFallbackSource: "prometheus"
+      historicalSource: "prometheus"
+      namespaceIncludeRegex: ""
+      namespaceExcludeRegex: "^(kube-system|nvsentinel|gpu-operator|monitoring)$"
+      labelSelector: ""
+      labelAllowlist:
+        - tenant_id
+        - user_id
+        - task_id
+        - job_id
+        - workspace_id
+      annotationAllowlist: []
+      maxPodsPerNode: 1000
+      maxPayloadBytes: 2097152
+      cacheSyncTimeout: "10s"
+
+    prometheus:
+      enabled: false
+      endpoint: "http://prometheus.monitoring.svc:9090"
+      timeout: "3s"
+      queryLookback: "5m"
+      maxConcurrentQueries: 5
+      cacheTTL: "60s"
+
+    missingPodContextAlert:
+      enabled: false
+      webhookURL: ""
+      timeout: "3s"
+      maxRetries: 2

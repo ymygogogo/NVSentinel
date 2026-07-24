@@ -98,6 +98,30 @@ var (
 		},
 	)
 
+	EnrichmentErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_events_exporter_enrichment_errors_total",
+			Help: "Total number of enrichment errors by reason.",
+		},
+		[]string{"reason"},
+	)
+
+	EnrichmentDropped = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_events_exporter_enrichment_dropped_total",
+			Help: "Total number of events dropped by enrichment policy.",
+		},
+		[]string{"reason"},
+	)
+
+	FaultLastSeenTimestampSeconds = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "health_events_exporter_fault_last_seen_timestamp_seconds",
+			Help: "Unix timestamp of the most recent HealthEvent observed by node, check, component, health state, and recommended action.",
+		},
+		[]string{"node", "check_name", "component", "healthy", "recommended_action"},
+	)
+
 	BackfillDuration = promauto.NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "health_events_exporter_backfill_duration_seconds",

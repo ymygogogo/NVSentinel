@@ -36,6 +36,9 @@ spec:
       labels:
         {{- include "event-exporter.labels" . | nindent 8 }}
     spec:
+      {{- if eq (include "event-exporter.podWatchEnabled" .) "true" }}
+      serviceAccountName: {{ include "event-exporter.fullname" . }}
+      {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -85,7 +88,9 @@ spec:
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ .Values.global.metricsPort }}"
+          {{- if .Values.exporter.oidc.enabled }}
           - "--oidc-secret-path=/var/secrets/oidc-client-secret"
+          {{- end }}
           - "--workers={{ .Values.exporter.workers }}"
           ports:
             - name: metrics
@@ -110,9 +115,11 @@ spec:
           - name: config-volume
             mountPath: /etc/config/config.toml
             subPath: config.toml
+          {{- if .Values.exporter.oidc.enabled }}
           - name: oidc-secret
             mountPath: /var/secrets
             readOnly: true
+          {{- end }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
             mountPath: /etc/ssl/client-certs
@@ -128,6 +135,10 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
+            {{- if .Values.timezone }}
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            {{- end }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: "/etc/ssl/client-certs"
@@ -165,10 +176,12 @@ spec:
           items:
           - key: config.toml
             path: config.toml
+      {{- if .Values.exporter.oidc.enabled }}
       - name: oidc-secret
         secret:
           secretName: {{ .Values.oidcSecretName }}
           optional: false
+      {{- end }}
       - name: var-run-vol
         hostPath:
           path: /var/run/nvsentinel

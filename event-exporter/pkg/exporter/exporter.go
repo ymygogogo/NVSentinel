@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -28,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/enrichment"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/metrics"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
@@ -39,6 +41,8 @@ type HealthEventsExporter struct {
 	dbClient       client.DatabaseClient
 	source         client.ChangeStreamWatcher
 	transformer    transformer.EventTransformer
+	enricher       enrichment.EventEnricher
+	alerter        enrichment.Alerter
 	sink           sink.EventSink
 	hasResumeToken bool
 	workers        int
@@ -49,6 +53,8 @@ func New(
 	dbClient client.DatabaseClient,
 	source client.ChangeStreamWatcher,
 	transformer transformer.EventTransformer,
+	enricher enrichment.EventEnricher,
+	alerter enrichment.Alerter,
 	sink sink.EventSink,
 	hasResumeToken bool,
 	workers int,
@@ -58,6 +64,8 @@ func New(
 		dbClient:       dbClient,
 		source:         source,
 		transformer:    transformer,
+		enricher:       enricher,
+		alerter:        alerter,
 		sink:           sink,
 		hasResumeToken: hasResumeToken,
 		workers:        workers,
@@ -238,7 +246,7 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 			continue
 		}
 
-		if err := e.publishWithRetry(ctx, healthEvent); err != nil {
+		if err := e.publishWithRetry(ctx, healthEvent, enrichment.ProcessingModeBackfill); err != nil {
 			slog.ErrorContext(ctx, "Failed to publish backfill event", "error", err)
 			tracing.RecordError(span, err)
 			span.AddEvent(
@@ -426,10 +434,10 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, rawEvent client
 	ctx, span := tracing.StartSpanWithLinkFromTraceContext(ctx, traceID, parentSpanID, "event_exporter.process_event")
 	defer span.End()
 
-	return e.publishWithRetry(ctx, healthEventWithStatus.HealthEvent)
+	return e.publishWithRetry(ctx, healthEventWithStatus.HealthEvent, enrichment.ProcessingModeStream)
 }
 
-func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.HealthEvent) error {
+func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.HealthEvent, processingMode string) error {
 	ctx, span := tracing.StartSpan(ctx, "event_exporter.publish_with_retry")
 	defer span.End()
 
@@ -444,6 +452,21 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 		slog.ErrorContext(ctx, "Failed to transform event", "error", transformErr)
 
 		return fmt.Errorf("transform event: %w", transformErr)
+	}
+	recordFaultLastSeenMetric(event)
+
+	if e.enricher != nil {
+		result, enrichErr := e.enricher.Enrich(ctx, event, cloudEvent, processingMode)
+		if enrichErr != nil {
+			tracing.RecordError(span, enrichErr)
+			metrics.EnrichmentErrors.WithLabelValues("enrich_error").Inc()
+			slog.WarnContext(ctx, "Failed to enrich event", "error", enrichErr)
+		}
+		if result.Drop {
+			metrics.EnrichmentDropped.WithLabelValues(result.Reason).Inc()
+			slog.WarnContext(ctx, "Skipping sink publish by enrichment result", "reason", result.Reason)
+			return nil
+		}
 	}
 
 	startTime := time.Now()
@@ -490,11 +513,71 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 		metrics.PublishErrors.WithLabelValues("max_retries_exceeded").Inc()
 		metrics.EventsPublished.WithLabelValues(metrics.StatusFailure).Inc()
 		slog.ErrorContext(ctx, "Publish failed after max retries", "error", err)
+		e.alertPublishFailure(ctx, event, cloudEvent, err)
 
-		return fmt.Errorf("publish failed after %d retries: %w", e.cfg.Exporter.FailureHandling.MaxRetries, err)
+		return nil
 	}
 
 	return nil
+}
+
+func recordFaultLastSeenMetric(event *pb.HealthEvent) {
+	if event == nil {
+		return
+	}
+
+	eventTime := time.Now().UTC()
+	if ts := event.GetGeneratedTimestamp(); ts != nil {
+		eventTime = ts.AsTime().UTC()
+	}
+
+	metrics.FaultLastSeenTimestampSeconds.WithLabelValues(
+		metricLabelOrUnknown(event.GetNodeName()),
+		metricLabelOrUnknown(event.GetCheckName()),
+		metricLabelOrUnknown(event.GetAgent()),
+		strconv.FormatBool(event.GetIsHealthy()),
+		metricLabelOrUnknown(event.GetRecommendedAction().String()),
+	).Set(float64(eventTime.Unix()))
+}
+
+func metricLabelOrUnknown(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func (e *HealthEventsExporter) alertPublishFailure(ctx context.Context, event *pb.HealthEvent, cloudEvent *transformer.CloudEvent, publishErr error) {
+	if e.alerter == nil {
+		return
+	}
+	eventTime := time.Time{}
+	if cloudEvent != nil && cloudEvent.Time != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, cloudEvent.Time); err == nil {
+			eventTime = parsed
+		}
+	}
+	if err := e.alerter.Alert(ctx, enrichment.MissingPodContextAlert{
+		Cluster:   clusterName(cloudEvent),
+		NodeName:  event.GetNodeName(),
+		CheckName: event.GetCheckName(),
+		Reason:    "max_retries_exceeded",
+		PodSource: "sink",
+		EventTime: eventTime,
+	}); err != nil {
+		slog.WarnContext(ctx, "Failed to send sink publish failure alert", "error", err, "publishError", publishErr)
+	}
+}
+
+func clusterName(cloudEvent *transformer.CloudEvent) string {
+	if cloudEvent == nil || cloudEvent.Data == nil {
+		return ""
+	}
+	metadata, ok := cloudEvent.Data["metadata"].(map[string]string)
+	if !ok {
+		return ""
+	}
+	return metadata["cluster"]
 }
 
 func unmarshalHealthEventWithStatus(ctx context.Context, event client.Event) (model.HealthEventWithStatus, error) {

@@ -22,6 +22,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
+    [exporter]
+    client_name = "{{ .Values.exporter.clientName }}"
+
     [exporter.metadata]
     cluster = "{{ .Values.exporter.metadata.cluster }}"
     environment = "{{ .Values.exporter.metadata.environment }}"
@@ -37,6 +40,7 @@ data:
     insecure_skip_verify = {{ .Values.exporter.sink.insecureSkipVerify }}
 
     [exporter.oidc]
+    enabled = {{ .Values.exporter.oidc.enabled }}
     token_url = "{{ .Values.exporter.oidc.tokenUrl }}"
     client_id = "{{ .Values.exporter.oidc.clientId }}"
     scope = "{{ .Values.exporter.oidc.scope }}"
@@ -59,3 +63,37 @@ data:
     max_backoff = "{{ .Values.exporter.failureHandling.maxBackoff }}"
     backoff_multiplier = {{ .Values.exporter.failureHandling.backoffMultiplier }}
 
+
+    [exporter.enrichment]
+    enabled = {{ .Values.exporter.enrichment.enabled }}
+    failure_policy = "{{ .Values.exporter.enrichment.failurePolicy }}"
+    current_cache_max_event_age = "{{ .Values.exporter.enrichment.currentCacheMaxEventAge }}"
+    clock_skew_tolerance = "{{ .Values.exporter.enrichment.clockSkewTolerance }}"
+
+    [exporter.enrichment.pod_metadata]
+    enabled = {{ .Values.exporter.enrichment.podMetadata.enabled }}
+    realtime_source = "{{ .Values.exporter.enrichment.podMetadata.realtimeSource }}"
+    realtime_fallback_source = "{{ .Values.exporter.enrichment.podMetadata.realtimeFallbackSource }}"
+    historical_source = "{{ .Values.exporter.enrichment.podMetadata.historicalSource }}"
+    namespace_include_regex = "{{ .Values.exporter.enrichment.podMetadata.namespaceIncludeRegex }}"
+    namespace_exclude_regex = "{{ .Values.exporter.enrichment.podMetadata.namespaceExcludeRegex }}"
+    label_selector = "{{ .Values.exporter.enrichment.podMetadata.labelSelector }}"
+    label_allowlist = [{{- range $i, $label := .Values.exporter.enrichment.podMetadata.labelAllowlist }}{{ if $i }}, {{ end }}"{{ $label }}"{{- end }}]
+    annotation_allowlist = [{{- range $i, $annotation := .Values.exporter.enrichment.podMetadata.annotationAllowlist }}{{ if $i }}, {{ end }}"{{ $annotation }}"{{- end }}]
+    max_pods_per_node = {{ .Values.exporter.enrichment.podMetadata.maxPodsPerNode | int }}
+    max_payload_bytes = {{ .Values.exporter.enrichment.podMetadata.maxPayloadBytes | int }}
+    cache_sync_timeout = "{{ .Values.exporter.enrichment.podMetadata.cacheSyncTimeout }}"
+
+    [exporter.enrichment.prometheus]
+    enabled = {{ .Values.exporter.enrichment.prometheus.enabled }}
+    endpoint = "{{ .Values.exporter.enrichment.prometheus.endpoint }}"
+    timeout = "{{ .Values.exporter.enrichment.prometheus.timeout }}"
+    query_lookback = "{{ .Values.exporter.enrichment.prometheus.queryLookback }}"
+    max_concurrent_queries = {{ .Values.exporter.enrichment.prometheus.maxConcurrentQueries | int }}
+    cache_ttl = "{{ .Values.exporter.enrichment.prometheus.cacheTTL }}"
+
+    [exporter.enrichment.missing_pod_context_alert]
+    enabled = {{ .Values.exporter.enrichment.missingPodContextAlert.enabled }}
+    webhook_url = "{{ .Values.exporter.enrichment.missingPodContextAlert.webhookURL }}"
+    timeout = "{{ .Values.exporter.enrichment.missingPodContextAlert.timeout }}"
+    max_retries = {{ .Values.exporter.enrichment.missingPodContextAlert.maxRetries | int }}

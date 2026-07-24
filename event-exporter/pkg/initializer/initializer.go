@@ -25,6 +25,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/auth"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/enrichment"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/exporter"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
@@ -72,7 +73,15 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	cloudEventsTransformer := transformer.NewCloudEventsTransformer(cfg.Exporter.Metadata)
 
-	datastoreBundle, hasResumeToken, err := initializeDatastore(ctx)
+	alerter := initializeEnrichmentAlerter(cfg)
+
+	eventEnricher, err := initializeEnricher(ctx, cfg, alerter)
+	if err != nil {
+		slog.Error("Failed to initialize enrichment", "error", err)
+		return nil, fmt.Errorf("failed to initialize enrichment: %w", err)
+	}
+
+	datastoreBundle, hasResumeToken, err := initializeDatastore(ctx, cfg.Exporter.ClientName)
 	if err != nil {
 		slog.Error("Failed to initialize datastore", "error", err)
 		return nil, fmt.Errorf("failed to initialize datastore: %w", err)
@@ -83,6 +92,8 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		datastoreBundle.DatabaseClient,
 		datastoreBundle.ChangeStreamWatcher,
 		cloudEventsTransformer,
+		eventEnricher,
+		alerter,
 		httpSink,
 		hasResumeToken,
 		params.Workers,
@@ -108,6 +119,11 @@ func loadConfig(configPath string) (*config.Config, error) {
 }
 
 func initializeOIDC(cfg *config.Config, secretPath string) (*auth.TokenProvider, error) {
+	if !cfg.Exporter.OIDC.IsEnabled() {
+		slog.Info("OIDC token provider disabled")
+		return nil, nil
+	}
+
 	clientSecretBytes, err := os.ReadFile(secretPath)
 	if err != nil {
 		slog.Error("Failed to read OIDC client secret from file", "path", secretPath, "error", err)
@@ -130,7 +146,7 @@ func initializeOIDC(cfg *config.Config, secretPath string) (*auth.TokenProvider,
 	return tokenProvider, nil
 }
 
-func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bool, error) {
+func initializeDatastore(ctx context.Context, clientName string) (*helper.DatastoreClientBundle, bool, error) {
 	datastoreConfig, err := datastore.LoadDatastoreConfig()
 	if err != nil {
 		slog.Error("Failed to load datastore config", "error", err)
@@ -140,15 +156,15 @@ func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bo
 	builder := client.GetPipelineBuilder()
 	pipeline := builder.BuildAllHealthEventInsertsPipeline()
 
-	bundle, err := helper.NewDatastoreClientFromConfig(ctx, "event-exporter", *datastoreConfig, pipeline)
+	bundle, err := helper.NewDatastoreClientFromConfig(ctx, clientName, *datastoreConfig, pipeline)
 	if err != nil {
 		slog.Error("Failed to create datastore client", "error", err)
 		return nil, false, fmt.Errorf("failed to create datastore client: %w", err)
 	}
 
-	slog.Info("Datastore client initialized", "provider", datastoreConfig.Provider)
+	slog.Info("Datastore client initialized", "provider", datastoreConfig.Provider, "clientName", clientName)
 
-	hasResumeToken, err := checkResumeTokenExists(ctx)
+	hasResumeToken, err := checkResumeTokenExists(ctx, clientName)
 	if err != nil {
 		slog.Warn("Failed to check resume token, assuming false", "error", err)
 
@@ -170,8 +186,8 @@ func tokenDatabaseCertMountPath(datastoreConfig *datastore.DataStoreConfig) stri
 	return filepath.Dir(datastoreConfig.Connection.TLSConfig.CAPath)
 }
 
-func checkResumeTokenExists(ctx context.Context) (bool, error) {
-	tokenConfig, err := storeconfig.TokenConfigFromEnv("event-exporter")
+func checkResumeTokenExists(ctx context.Context, clientName string) (bool, error) {
+	tokenConfig, err := storeconfig.TokenConfigFromEnv(clientName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get token config: %w", err)
 	}
@@ -239,4 +255,67 @@ func checkResumeTokenExists(ctx context.Context) (bool, error) {
 	}
 
 	return hasToken, nil
+}
+
+func initializeEnrichmentAlerter(cfg *config.Config) enrichment.Alerter {
+	alertCfg := cfg.Exporter.Enrichment.MissingPodContextAlert
+	if !alertCfg.Enabled {
+		return nil
+	}
+	return enrichment.NewWebhookAlerter(
+		alertCfg.WebhookURL,
+		alertCfg.GetTimeout(),
+		alertCfg.MaxRetries,
+	)
+}
+
+func initializeEnricher(ctx context.Context, cfg *config.Config, alerter enrichment.Alerter) (enrichment.EventEnricher, error) {
+	enrichmentCfg := cfg.Exporter.Enrichment
+	if !enrichmentCfg.Enabled || !enrichmentCfg.PodMetadata.Enabled {
+		return nil, nil
+	}
+
+	podCfg := enrichmentCfg.PodMetadata
+	promCfg := enrichmentCfg.Prometheus
+
+	var realtimeProvider enrichment.Provider
+	if podCfg.RealtimeSource == "kubernetes-watch-cache" {
+		provider, err := enrichment.NewKubernetesPodWatchCache(ctx, enrichment.PodCacheConfig{
+			LabelSelector:    podCfg.LabelSelector,
+			CacheSyncTimeout: podCfg.GetCacheSyncTimeout(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		realtimeProvider = provider
+	}
+
+	var prometheusProvider enrichment.Provider
+	if promCfg.Enabled {
+		prometheusProvider = enrichment.NewPrometheusProvider(enrichment.PrometheusConfig{
+			Endpoint:             promCfg.Endpoint,
+			Timeout:              promCfg.GetTimeout(),
+			QueryLookback:        promCfg.GetQueryLookback(),
+			LabelAllowlist:       podCfg.LabelAllowlist,
+			MaxConcurrentQueries: promCfg.MaxConcurrentQueries,
+			CacheTTL:             promCfg.GetCacheTTL(),
+		})
+	}
+
+	return enrichment.NewPipeline(enrichment.Config{
+		Enabled:                  true,
+		FailurePolicy:            enrichmentCfg.FailurePolicy,
+		CurrentCacheMaxEventAge:  enrichmentCfg.GetCurrentCacheMaxEventAge(),
+		ClockSkewTolerance:       enrichmentCfg.GetClockSkewTolerance(),
+		NamespaceIncludeRegex:    podCfg.NamespaceIncludeRegex,
+		NamespaceExcludeRegex:    podCfg.NamespaceExcludeRegex,
+		LabelAllowlist:           podCfg.LabelAllowlist,
+		AnnotationAllowlist:      podCfg.AnnotationAllowlist,
+		MaxPodsPerNode:           podCfg.MaxPodsPerNode,
+		MaxPayloadBytes:          podCfg.MaxPayloadBytes,
+		RealtimeProvider:         realtimeProvider,
+		RealtimeFallbackProvider: prometheusProvider,
+		HistoricalProvider:       prometheusProvider,
+		Alerter:                  alerter,
+	})
 }

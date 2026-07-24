@@ -78,10 +78,14 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	token, err := s.tokenProvider.GetToken(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get token", "error", err)
-		return fmt.Errorf("get token: %w", err)
+	var token string
+	if s.tokenProvider != nil {
+		var tokenErr error
+		token, tokenErr = s.tokenProvider.GetToken(ctx)
+		if tokenErr != nil {
+			slog.ErrorContext(ctx, "Failed to get token", "error", tokenErr)
+			return fmt.Errorf("get token: %w", tokenErr)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
@@ -91,7 +95,9 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 	}
 
 	req.Header.Set("Content-Type", "application/cloudevents+json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	if token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

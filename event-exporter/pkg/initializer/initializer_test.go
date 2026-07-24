@@ -17,6 +17,7 @@ package initializer
 import (
 	"testing"
 
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -42,5 +43,19 @@ func TestTokenDatabaseCertMountPath_TLSConfigReturnsCADirectory(t *testing.T) {
 
 	if got := tokenDatabaseCertMountPath(dsConfig); got != "/tmp/mongo-certs" {
 		t.Fatalf("expected CA cert directory, got %q", got)
+	}
+}
+
+func TestInitializeOIDC_DisabledDoesNotReadSecret(t *testing.T) {
+	cfg := &config.Config{}
+	enabled := false
+	cfg.Exporter.OIDC.Enabled = &enabled
+
+	provider, err := initializeOIDC(cfg, "/path/that/does/not/exist")
+	if err != nil {
+		t.Fatalf("initializeOIDC() error = %v", err)
+	}
+	if provider != nil {
+		t.Fatalf("provider = %#v, want nil", provider)
 	}
 }

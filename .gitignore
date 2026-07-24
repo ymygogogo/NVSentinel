@@ -450,3 +450,6 @@ tests/scale-tests/results/*.csv
 tests/scale-tests/cmd/fqm-scale-test/results/
 preflight-checks/dcgm-diag/dcgm-diag
 preflight/preflight
+
+# Local tunnel state
+.kube_tunnel.pid

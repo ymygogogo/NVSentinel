@@ -121,3 +121,20 @@ func TestPublish(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPSinkPublishesWithoutAuthorizationWhenTokenProviderNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want empty", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	sink := NewHTTPSink(server.URL, 10*time.Second, nil, false, 1)
+	event := &transformer.CloudEvent{SpecVersion: "1.0", Type: "test", Source: "test", ID: "id", Time: time.Now().Format(time.RFC3339Nano), Data: map[string]any{}}
+
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+}
