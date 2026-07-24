@@ -55,6 +55,29 @@ func TestKafkaSinkConfigValidatesWithoutOIDC(t *testing.T) {
 	}
 }
 
+func TestKafkaSinkConfigLoadsWrappedPayloadConfig(t *testing.T) {
+	cfg, err := Load(writeKafkaConfig(t, baseKafkaConfig(`payload_format = "wrapped"
+
+[exporter.sink.kafka.wrapper]
+event_type = "nvsentinel_health_event"
+resource_id = "{{ .Node }}"
+resource_status = ""
+resource_sub_status = "{{ .CheckName }}"
+extra_raw_field = "raw"
+`)))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	kafka := cfg.Exporter.Sink.Kafka
+	if kafka.PayloadFormat != KafkaPayloadFormatWrapped {
+		t.Fatalf("PayloadFormat = %q, want %q", kafka.PayloadFormat, KafkaPayloadFormatWrapped)
+	}
+	if kafka.Wrapper.ResourceID != "{{ .Node }}" {
+		t.Fatalf("Wrapper.ResourceID = %q", kafka.Wrapper.ResourceID)
+	}
+}
+
 func TestKafkaSinkConfigRequiresBrokersAndTopic(t *testing.T) {
 	cfg := Config{Exporter: ExporterConfig{Sink: SinkConfig{Type: SinkTypeKafka}, ResumeToken: ResumeTokenConfig{Collection: "tokens", Database: "nvsentinel"}}}
 
@@ -78,6 +101,7 @@ func TestKafkaSinkConfigRejectsInvalidEnums(t *testing.T) {
 	}{
 		{name: "acks", extra: "required_acks = \"invalid\"\n", want: "required_acks"},
 		{name: "compression", extra: "compression = \"brotli\"\n", want: "compression"},
+		{name: "payload format", extra: "payload_format = \"avro\"\n", want: "payload_format"},
 		{name: "sasl mechanism", extra: "[exporter.sink.kafka.sasl]\nenabled = true\nmechanism = \"OAUTHBEARER\"\nusername = \"u\"\npassword_file = \"/tmp/p\"\n", want: "sasl mechanism"},
 	}
 

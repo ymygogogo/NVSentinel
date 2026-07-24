@@ -56,6 +56,9 @@ type MetadataConfig map[string]string
 const (
 	SinkTypeHTTP  = "http"
 	SinkTypeKafka = "kafka"
+
+	KafkaPayloadFormatCloudEvent = "cloudevent"
+	KafkaPayloadFormatWrapped    = "wrapped"
 )
 
 type SinkConfig struct {
@@ -67,15 +70,25 @@ type SinkConfig struct {
 }
 
 type KafkaSinkConfig struct {
-	Brokers      []string        `toml:"brokers"`
-	Topic        string          `toml:"topic"`
-	ClientID     string          `toml:"client_id"`
-	RequiredAcks string          `toml:"required_acks"`
-	Compression  string          `toml:"compression"`
-	BatchTimeout string          `toml:"batch_timeout"`
-	WriteTimeout string          `toml:"write_timeout"`
-	TLS          KafkaTLSConfig  `toml:"tls"`
-	SASL         KafkaSASLConfig `toml:"sasl"`
+	Brokers       []string           `toml:"brokers"`
+	Topic         string             `toml:"topic"`
+	ClientID      string             `toml:"client_id"`
+	RequiredAcks  string             `toml:"required_acks"`
+	Compression   string             `toml:"compression"`
+	BatchTimeout  string             `toml:"batch_timeout"`
+	WriteTimeout  string             `toml:"write_timeout"`
+	PayloadFormat string             `toml:"payload_format"`
+	Wrapper       KafkaWrapperConfig `toml:"wrapper"`
+	TLS           KafkaTLSConfig     `toml:"tls"`
+	SASL          KafkaSASLConfig    `toml:"sasl"`
+}
+
+type KafkaWrapperConfig struct {
+	EventType         string `toml:"event_type"`
+	ResourceID        string `toml:"resource_id"`
+	ResourceStatus    string `toml:"resource_status"`
+	ResourceSubStatus string `toml:"resource_sub_status"`
+	ExtraRawField     string `toml:"extra_raw_field"`
 }
 
 type KafkaTLSConfig struct {
@@ -356,6 +369,12 @@ func validateKafkaSink(cfg KafkaSinkConfig) error {
 	case "", "none", "gzip", "snappy", "lz4", "zstd":
 	default:
 		return fmt.Errorf("unsupported kafka compression %q", cfg.Compression)
+	}
+
+	switch cfg.PayloadFormat {
+	case "", KafkaPayloadFormatCloudEvent, KafkaPayloadFormatWrapped:
+	default:
+		return fmt.Errorf("unsupported kafka payload_format %q", cfg.PayloadFormat)
 	}
 
 	if cfg.SASL.Enabled {

@@ -1,6 +1,7 @@
 package sink
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
@@ -17,16 +19,31 @@ import (
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
+const (
+	KafkaPayloadFormatCloudEvent = "cloudevent"
+	KafkaPayloadFormatWrapped    = "wrapped"
+)
+
 type KafkaConfig struct {
-	Brokers      []string
-	Topic        string
-	ClientID     string
-	RequiredAcks string
-	Compression  string
-	BatchTimeout time.Duration
-	WriteTimeout time.Duration
-	TLS          KafkaTLSConfig
-	SASL         KafkaSASLConfig
+	Brokers       []string
+	Topic         string
+	ClientID      string
+	RequiredAcks  string
+	Compression   string
+	BatchTimeout  time.Duration
+	WriteTimeout  time.Duration
+	PayloadFormat string
+	Wrapper       KafkaWrapperConfig
+	TLS           KafkaTLSConfig
+	SASL          KafkaSASLConfig
+}
+
+type KafkaWrapperConfig struct {
+	EventType         string
+	ResourceID        string
+	ResourceStatus    string
+	ResourceSubStatus string
+	ExtraRawField     string
 }
 
 type KafkaTLSConfig struct {
@@ -50,8 +67,10 @@ type kafkaProducer interface {
 }
 
 type KafkaSink struct {
-	topic    string
-	producer kafkaProducer
+	topic         string
+	producer      kafkaProducer
+	payloadFormat string
+	wrapper       KafkaWrapperConfig
 }
 
 func NewKafkaSink(cfg KafkaConfig) (*KafkaSink, error) {
@@ -87,17 +106,17 @@ func NewKafkaSink(cfg KafkaConfig) (*KafkaSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create kafka client: %w", err)
 	}
-	return &KafkaSink{topic: cfg.Topic, producer: client}, nil
+	return &KafkaSink{topic: cfg.Topic, producer: client, payloadFormat: kafkaPayloadFormat(cfg.PayloadFormat), wrapper: normalizeKafkaWrapper(cfg.Wrapper)}, nil
 }
 
 func NewKafkaSinkWithProducer(topic string, producer kafkaProducer) *KafkaSink {
-	return &KafkaSink{topic: topic, producer: producer}
+	return &KafkaSink{topic: topic, producer: producer, payloadFormat: KafkaPayloadFormatCloudEvent, wrapper: normalizeKafkaWrapper(KafkaWrapperConfig{})}
 }
 
 func (s *KafkaSink) Publish(ctx context.Context, event *transformer.CloudEvent) error {
-	body, err := json.Marshal(event)
+	body, contentType, err := s.recordValue(event)
 	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
+		return err
 	}
 
 	record := &kgo.Record{
@@ -105,7 +124,7 @@ func (s *KafkaSink) Publish(ctx context.Context, event *transformer.CloudEvent) 
 		Key:   []byte(event.ID),
 		Value: body,
 		Headers: []kgo.RecordHeader{
-			{Key: "content-type", Value: []byte("application/cloudevents+json")},
+			{Key: "content-type", Value: []byte(contentType)},
 			{Key: "ce_specversion", Value: []byte(event.SpecVersion)},
 			{Key: "ce_type", Value: []byte(event.Type)},
 			{Key: "ce_source", Value: []byte(event.Source)},
@@ -119,11 +138,146 @@ func (s *KafkaSink) Publish(ctx context.Context, event *transformer.CloudEvent) 
 	return nil
 }
 
+func (s *KafkaSink) recordValue(event *transformer.CloudEvent) ([]byte, string, error) {
+	if s.payloadFormat == KafkaPayloadFormatWrapped {
+		body, err := json.Marshal(s.wrapEvent(event))
+		if err != nil {
+			return nil, "", fmt.Errorf("marshal wrapped event: %w", err)
+		}
+		return body, "application/json", nil
+	}
+
+	body, err := json.Marshal(event)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal event: %w", err)
+	}
+	return body, "application/cloudevents+json", nil
+}
+
+func (s *KafkaSink) wrapEvent(event *transformer.CloudEvent) map[string]any {
+	ctx := wrapperTemplateContext(event)
+	extraRawField := s.wrapper.ExtraRawField
+	if extraRawField == "" {
+		extraRawField = "raw"
+	}
+	extra := map[string]any{
+		"schema":             "nvsentinel.kafka_wrapper.v1",
+		"event_id":           event.ID,
+		"cluster":            ctx.Cluster,
+		"node":               ctx.Node,
+		"check_name":         ctx.CheckName,
+		"recommended_action": ctx.RecommendedAction,
+		"healthy":            ctx.Healthy,
+		"enrichment_status":  ctx.EnrichmentStatus,
+		extraRawField:        event,
+	}
+	return map[string]any{
+		"event_type":          renderWrapperValue(s.wrapper.EventType, ctx),
+		"resource_id":         renderWrapperValue(s.wrapper.ResourceID, ctx),
+		"resource_status":     renderWrapperValue(s.wrapper.ResourceStatus, ctx),
+		"resource_sub_status": renderWrapperValue(s.wrapper.ResourceSubStatus, ctx),
+		"update_time":         event.Time,
+		"extra":               extra,
+	}
+}
+
 func (s *KafkaSink) Close(ctx context.Context) error {
 	if s.producer != nil {
 		s.producer.Close()
 	}
 	return nil
+}
+
+type wrapperContext struct {
+	EventID           string
+	Type              string
+	Source            string
+	Time              string
+	Cluster           string
+	Node              string
+	CheckName         string
+	RecommendedAction string
+	Healthy           bool
+	EnrichmentStatus  string
+}
+
+func wrapperTemplateContext(event *transformer.CloudEvent) wrapperContext {
+	healthEvent := mapValue(event.Data["healthEvent"])
+	enrichment := mapValue(event.Data["enrichment"])
+	metadata := mapValue(event.Data["metadata"])
+	return wrapperContext{
+		EventID:           event.ID,
+		Type:              event.Type,
+		Source:            event.Source,
+		Time:              event.Time,
+		Cluster:           stringMapValue(metadata, "cluster"),
+		Node:              stringMapValue(healthEvent, "nodeName"),
+		CheckName:         stringMapValue(healthEvent, "checkName"),
+		RecommendedAction: stringMapValue(healthEvent, "recommendedAction"),
+		Healthy:           boolMapValue(healthEvent, "isHealthy"),
+		EnrichmentStatus:  stringMapValue(enrichment, "status"),
+	}
+}
+
+func mapValue(value any) map[string]any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed
+	case map[string]string:
+		result := make(map[string]any, len(typed))
+		for k, v := range typed {
+			result[k] = v
+		}
+		return result
+	default:
+		return map[string]any{}
+	}
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	if value, ok := values[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func boolMapValue(values map[string]any, key string) bool {
+	if value, ok := values[key].(bool); ok {
+		return value
+	}
+	return false
+}
+
+func renderWrapperValue(raw string, ctx wrapperContext) string {
+	if raw == "" {
+		return ""
+	}
+	tmpl, err := template.New("kafka-wrapper").Option("missingkey=zero").Parse(raw)
+	if err != nil {
+		return raw
+	}
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, ctx); err != nil {
+		return raw
+	}
+	return rendered.String()
+}
+
+func kafkaPayloadFormat(raw string) string {
+	if raw == KafkaPayloadFormatWrapped {
+		return KafkaPayloadFormatWrapped
+	}
+	return KafkaPayloadFormatCloudEvent
+}
+
+func normalizeKafkaWrapper(cfg KafkaWrapperConfig) KafkaWrapperConfig {
+	if cfg.EventType == "" {
+		cfg.EventType = "nvsentinel_health_event"
+	}
+	if cfg.ExtraRawField == "" {
+		cfg.ExtraRawField = "raw"
+	}
+	return cfg
 }
 
 func kafkaAcks(raw string) kgo.Acks {

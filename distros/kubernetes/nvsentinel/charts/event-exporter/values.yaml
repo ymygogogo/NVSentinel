@@ -77,6 +77,13 @@ exporter:
       compression: "snappy" # none | gzip | snappy | lz4 | zstd
       batchTimeout: "10ms"
       writeTimeout: "30s"
+      payloadFormat: "cloudevent" # cloudevent | wrapped
+      wrapper:
+        eventType: "nvsentinel_health_event"
+        resourceId: ""
+        resourceStatus: ""
+        resourceSubStatus: ""
+        extraRawField: "raw"
       tls:
         enabled: false
         secretName: ""

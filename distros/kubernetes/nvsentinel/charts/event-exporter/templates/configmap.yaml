@@ -48,6 +48,14 @@ data:
     compression = "{{ .Values.exporter.sink.kafka.compression }}"
     batch_timeout = "{{ .Values.exporter.sink.kafka.batchTimeout }}"
     write_timeout = "{{ .Values.exporter.sink.kafka.writeTimeout }}"
+    payload_format = "{{ .Values.exporter.sink.kafka.payloadFormat }}"
+
+    [exporter.sink.kafka.wrapper]
+    event_type = "{{ .Values.exporter.sink.kafka.wrapper.eventType }}"
+    resource_id = "{{ .Values.exporter.sink.kafka.wrapper.resourceId }}"
+    resource_status = "{{ .Values.exporter.sink.kafka.wrapper.resourceStatus }}"
+    resource_sub_status = "{{ .Values.exporter.sink.kafka.wrapper.resourceSubStatus }}"
+    extra_raw_field = "{{ .Values.exporter.sink.kafka.wrapper.extraRawField }}"
 
     [exporter.sink.kafka.tls]
     enabled = {{ .Values.exporter.sink.kafka.tls.enabled }}

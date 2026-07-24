@@ -82,6 +82,70 @@ func TestKafkaSinkPublishesCloudEventRecord(t *testing.T) {
 	}
 }
 
+func TestKafkaSinkPublishesWrappedRecord(t *testing.T) {
+	producer := &recordingKafkaProducer{}
+	sink := NewKafkaSinkWithProducer("dingo_command_ai_instance_status_change_topic", producer)
+	sink.payloadFormat = KafkaPayloadFormatWrapped
+	sink.wrapper = KafkaWrapperConfig{
+		EventType:         "nvsentinel_health_event",
+		ResourceID:        "{{ .Node }}",
+		ResourceStatus:    "",
+		ResourceSubStatus: "{{ .CheckName }}",
+		ExtraRawField:     "raw",
+	}
+	event := &transformer.CloudEvent{
+		SpecVersion: "1.0",
+		Type:        "com.nvidia.nvsentinel.health.v1",
+		Source:      "nvsentinel://test-cluster/healthevents",
+		ID:          "event-123",
+		Time:        "2026-07-24T01:02:03Z",
+		Data: map[string]any{
+			"metadata": map[string]string{"cluster": "test-cluster"},
+			"healthEvent": map[string]any{
+				"nodeName":          "gpu-node-1",
+				"checkName":         "MountPointUnavailable",
+				"recommendedAction": "CONTACT_SUPPORT",
+				"isHealthy":         false,
+			},
+			"enrichment": map[string]any{"status": "empty"},
+		},
+	}
+
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(producer.record.Value, &decoded); err != nil {
+		t.Fatalf("record value is not JSON: %v", err)
+	}
+	if decoded["event_type"] != "nvsentinel_health_event" {
+		t.Fatalf("event_type = %#v", decoded["event_type"])
+	}
+	if decoded["resource_id"] != "gpu-node-1" {
+		t.Fatalf("resource_id = %#v", decoded["resource_id"])
+	}
+	if decoded["resource_status"] != "" {
+		t.Fatalf("resource_status = %#v", decoded["resource_status"])
+	}
+	if decoded["resource_sub_status"] != "MountPointUnavailable" {
+		t.Fatalf("resource_sub_status = %#v", decoded["resource_sub_status"])
+	}
+	if decoded["update_time"] != event.Time {
+		t.Fatalf("update_time = %#v", decoded["update_time"])
+	}
+	extra, ok := decoded["extra"].(map[string]any)
+	if !ok {
+		t.Fatalf("extra = %#v", decoded["extra"])
+	}
+	if extra["event_id"] != event.ID || extra["node"] != "gpu-node-1" || extra["enrichment_status"] != "empty" {
+		t.Fatalf("extra summary = %#v", extra)
+	}
+	if _, ok := extra["raw"].(map[string]any); !ok {
+		t.Fatalf("extra.raw = %#v", extra["raw"])
+	}
+}
+
 func TestKafkaTLSConfigLoadsFiles(t *testing.T) {
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca.crt")

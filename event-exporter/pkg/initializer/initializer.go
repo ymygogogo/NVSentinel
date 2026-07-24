@@ -117,13 +117,21 @@ func initializeSink(cfg *config.Config, tokenProvider *auth.TokenProvider, worke
 	case config.SinkTypeKafka:
 		kafkaCfg := cfg.Exporter.Sink.Kafka
 		return sink.NewKafkaSink(sink.KafkaConfig{
-			Brokers:      kafkaCfg.Brokers,
-			Topic:        kafkaCfg.Topic,
-			ClientID:     kafkaCfg.ClientID,
-			RequiredAcks: kafkaCfg.RequiredAcks,
-			Compression:  kafkaCfg.Compression,
-			BatchTimeout: kafkaCfg.GetBatchTimeout(),
-			WriteTimeout: kafkaCfg.GetWriteTimeout(),
+			Brokers:       kafkaCfg.Brokers,
+			Topic:         kafkaCfg.Topic,
+			ClientID:      kafkaCfg.ClientID,
+			RequiredAcks:  kafkaCfg.RequiredAcks,
+			Compression:   kafkaCfg.Compression,
+			BatchTimeout:  kafkaCfg.GetBatchTimeout(),
+			WriteTimeout:  kafkaCfg.GetWriteTimeout(),
+			PayloadFormat: kafkaCfg.PayloadFormat,
+			Wrapper: sink.KafkaWrapperConfig{
+				EventType:         kafkaCfg.Wrapper.EventType,
+				ResourceID:        kafkaCfg.Wrapper.ResourceID,
+				ResourceStatus:    kafkaCfg.Wrapper.ResourceStatus,
+				ResourceSubStatus: kafkaCfg.Wrapper.ResourceSubStatus,
+				ExtraRawField:     kafkaCfg.Wrapper.ExtraRawField,
+			},
 			TLS: sink.KafkaTLSConfig{
 				Enabled:            kafkaCfg.TLS.Enabled,
 				CAFile:             kafkaCfg.TLS.CAFile,
