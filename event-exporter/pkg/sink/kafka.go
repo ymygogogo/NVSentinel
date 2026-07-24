@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"text/template"
@@ -71,6 +72,7 @@ type KafkaSink struct {
 	producer      kafkaProducer
 	payloadFormat string
 	wrapper       KafkaWrapperConfig
+	writeTimeout  time.Duration
 }
 
 func NewKafkaSink(cfg KafkaConfig) (*KafkaSink, error) {
@@ -106,7 +108,15 @@ func NewKafkaSink(cfg KafkaConfig) (*KafkaSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create kafka client: %w", err)
 	}
-	return &KafkaSink{topic: cfg.Topic, producer: client, payloadFormat: kafkaPayloadFormat(cfg.PayloadFormat), wrapper: normalizeKafkaWrapper(cfg.Wrapper)}, nil
+	payloadFormat := kafkaPayloadFormat(cfg.PayloadFormat)
+	slog.Info("Initialized Kafka sink",
+		"brokers", strings.Join(cfg.Brokers, ","),
+		"topic", cfg.Topic,
+		"client_id", cfg.ClientID,
+		"payload_format", payloadFormat,
+		"tls_enabled", cfg.TLS.Enabled,
+		"sasl_enabled", cfg.SASL.Enabled)
+	return &KafkaSink{topic: cfg.Topic, producer: client, payloadFormat: payloadFormat, wrapper: normalizeKafkaWrapper(cfg.Wrapper), writeTimeout: cfg.WriteTimeout}, nil
 }
 
 func NewKafkaSinkWithProducer(topic string, producer kafkaProducer) *KafkaSink {
@@ -117,6 +127,13 @@ func (s *KafkaSink) Publish(ctx context.Context, event *transformer.CloudEvent) 
 	body, contentType, err := s.recordValue(event)
 	if err != nil {
 		return err
+	}
+
+	publishCtx := ctx
+	if s.writeTimeout > 0 {
+		var cancel context.CancelFunc
+		publishCtx, cancel = context.WithTimeout(ctx, s.writeTimeout)
+		defer cancel()
 	}
 
 	record := &kgo.Record{
@@ -132,9 +149,18 @@ func (s *KafkaSink) Publish(ctx context.Context, event *transformer.CloudEvent) 
 		},
 	}
 
-	if err := s.producer.ProduceSync(ctx, record).FirstErr(); err != nil {
+	if err := s.producer.ProduceSync(publishCtx, record).FirstErr(); err != nil {
+		slog.WarnContext(ctx, "Failed to publish event to Kafka",
+			"topic", s.topic,
+			"event_id", event.ID,
+			"payload_format", s.payloadFormat,
+			"error", err)
 		return fmt.Errorf("produce kafka record: %w", err)
 	}
+	slog.InfoContext(ctx, "Published event to Kafka",
+		"topic", s.topic,
+		"event_id", event.ID,
+		"payload_format", s.payloadFormat)
 	return nil
 }
 

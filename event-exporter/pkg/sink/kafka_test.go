@@ -1,6 +1,7 @@
 package sink
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,9 +11,11 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +28,19 @@ type recordingKafkaProducer struct {
 	err    error
 	closed bool
 }
+
+type blockingKafkaProducer struct{}
+
+func (p *blockingKafkaProducer) ProduceSync(ctx context.Context, records ...*kgo.Record) kgo.ProduceResults {
+	<-ctx.Done()
+	var record *kgo.Record
+	if len(records) > 0 {
+		record = records[0]
+	}
+	return kgo.ProduceResults{{Record: record, Err: ctx.Err()}}
+}
+
+func (p *blockingKafkaProducer) Close() {}
 
 func (p *recordingKafkaProducer) ProduceSync(_ context.Context, records ...*kgo.Record) kgo.ProduceResults {
 	if len(records) > 0 {
@@ -79,6 +95,66 @@ func TestKafkaSinkPublishesCloudEventRecord(t *testing.T) {
 	}
 	if headers["ce_id"] != "event-123" || headers["ce_type"] != event.Type || headers["ce_source"] != event.Source || headers["ce_specversion"] != "1.0" {
 		t.Fatalf("CloudEvent headers = %#v", headers)
+	}
+}
+
+func TestKafkaSinkLogsPublishSuccess(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	producer := &recordingKafkaProducer{}
+	sink := NewKafkaSinkWithProducer("nvsentinel.health-events", producer)
+	event := &transformer.CloudEvent{
+		SpecVersion: "1.0",
+		Type:        "com.nvidia.nvsentinel.health.v1",
+		Source:      "nvsentinel://test/healthevents",
+		ID:          "event-123",
+		Time:        "2026-07-24T01:02:03Z",
+		Data:        map[string]any{"enrichment": map[string]any{"status": "matched"}},
+	}
+
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		"Published event to Kafka",
+		"topic=nvsentinel.health-events",
+		"event_id=event-123",
+		"payload_format=cloudevent",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log output missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestKafkaSinkPublishUsesWriteTimeout(t *testing.T) {
+	producer := &blockingKafkaProducer{}
+	sink := NewKafkaSinkWithProducer("nvsentinel.health-events", producer)
+	sink.writeTimeout = 10 * time.Millisecond
+	event := &transformer.CloudEvent{
+		SpecVersion: "1.0",
+		Type:        "com.nvidia.nvsentinel.health.v1",
+		Source:      "nvsentinel://test/healthevents",
+		ID:          "event-timeout",
+		Time:        "2026-07-24T01:02:03Z",
+		Data:        map[string]any{"enrichment": map[string]any{"status": "matched"}},
+	}
+
+	start := time.Now()
+	err := sink.Publish(context.Background(), event)
+	if err == nil {
+		t.Fatal("Publish() error was nil")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Publish() took %s, want bounded by write timeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("Publish() error = %v", err)
 	}
 }
 
