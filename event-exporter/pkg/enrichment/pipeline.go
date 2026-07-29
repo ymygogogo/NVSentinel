@@ -77,18 +77,18 @@ func (p *Pipeline) Enrich(
 
 	eventTime, ok := generatedTime(event)
 	if !ok {
-		return p.applyNoContext(ctx, event, cloudEvent, "missing_generated_timestamp", "")
+		return p.applyNoContext(ctx, event, cloudEvent, "missing_generated_timestamp", "", nil)
 	}
 
 	query := Query{NodeName: event.GetNodeName(), EventTime: eventTime}
-	pods, source, errors := p.findPods(ctx, query, mode)
+	pods, source, errors, errorDetails := p.findPods(ctx, query, mode)
 
 	if len(pods) == 0 {
 		reason := "missing_pod_context"
 		if len(errors) > 0 {
 			reason = strings.Join(errors, ",")
 		}
-		return p.applyNoContext(ctx, event, cloudEvent, reason, source)
+		return p.applyNoContext(ctx, event, cloudEvent, reason, source, errorDetails)
 	}
 
 	truncated := false
@@ -118,40 +118,44 @@ func (p *Pipeline) Enrich(
 	return Result{}, nil
 }
 
-func (p *Pipeline) findPods(ctx context.Context, query Query, mode string) ([]PodSummary, string, []string) {
+func (p *Pipeline) findPods(ctx context.Context, query Query, mode string) ([]PodSummary, string, []string, []string) {
 	if mode == ProcessingModeBackfill || p.isHistorical(query.EventTime) {
-		pods, source, errors, _ := p.queryProvider(ctx, p.cfg.HistoricalProvider, query, PodSourcePrometheus)
-		return pods, source, errors
+		pods, source, errors, details, _ := p.queryProvider(ctx, p.cfg.HistoricalProvider, query, PodSourcePrometheus)
+		return pods, source, errors, details
 	}
 
-	pods, source, errors, cacheAvailable := p.queryProvider(ctx, p.cfg.RealtimeProvider, query, PodSourceWatchCache)
+	pods, source, errors, details, cacheAvailable := p.queryProvider(ctx, p.cfg.RealtimeProvider, query, PodSourceWatchCache)
 	if len(pods) > 0 || cacheAvailable {
-		return pods, source, errors
+		return pods, source, errors, details
 	}
 
-	fallbackPods, fallbackSource, fallbackErrors, _ := p.queryProvider(ctx, p.cfg.RealtimeFallbackProvider, query, PodSourcePrometheus)
+	fallbackPods, fallbackSource, fallbackErrors, fallbackDetails, _ := p.queryProvider(ctx, p.cfg.RealtimeFallbackProvider, query, PodSourcePrometheus)
 	if len(fallbackErrors) > 0 {
 		errors = append(errors, fallbackErrors...)
+	}
+	if len(fallbackDetails) > 0 {
+		details = append(details, fallbackDetails...)
 	}
 	if fallbackSource != "" {
 		source = fallbackSource
 	}
-	return fallbackPods, source, errors
+	return fallbackPods, source, errors, details
 }
 
-func (p *Pipeline) queryProvider(ctx context.Context, provider Provider, query Query, source string) ([]PodSummary, string, []string, bool) {
+func (p *Pipeline) queryProvider(ctx context.Context, provider Provider, query Query, source string) ([]PodSummary, string, []string, []string, bool) {
 	if provider == nil {
-		return nil, source, []string{source + "_provider_not_configured"}, false
+		reason := source + "_provider_not_configured"
+		return nil, source, []string{reason}, []string{source + ": provider not configured"}, false
 	}
 	pods, err := provider.GetPods(ctx, query)
 	if err != nil {
-		return nil, source, []string{source + "_query_failed"}, false
+		return nil, source, []string{source + "_query_failed"}, []string{source + ": " + err.Error()}, false
 	}
 	pods = p.filter.normalizePods(pods)
 	if len(pods) == 0 {
-		return nil, source, []string{source + "_empty"}, true
+		return nil, source, []string{source + "_empty"}, nil, true
 	}
-	return pods, source, nil, true
+	return pods, source, nil, nil, true
 }
 
 func (p *Pipeline) isHistorical(eventTime time.Time) bool {
@@ -168,6 +172,7 @@ func (p *Pipeline) applyNoContext(
 	cloudEvent *transformer.CloudEvent,
 	reason string,
 	source string,
+	errorDetails []string,
 ) (Result, error) {
 	status := StatusFailed
 	if strings.Contains(reason, "_empty") {
@@ -202,7 +207,8 @@ func (p *Pipeline) applyNoContext(
 	slog.ErrorContext(ctx, "Publishing event with pod context enrichment failed",
 		"node", event.GetNodeName(),
 		"checkName", event.GetCheckName(),
-		"reason", reason)
+		"reason", reason,
+		"error_details", strings.Join(errorDetails, "; "))
 
 	if p.cfg.Alerter != nil {
 		if err := p.cfg.Alerter.Alert(ctx, MissingPodContextAlert{

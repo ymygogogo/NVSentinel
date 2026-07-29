@@ -339,6 +339,29 @@ func TestPipelineRequirePodContextPublishesWhenWatchCacheIsEmpty(t *testing.T) {
 	}
 }
 
+func TestPipelineQueryProviderReturnsStableReasonAndErrorDetails(t *testing.T) {
+	pipeline, err := NewPipeline(Config{Enabled: true})
+	if err != nil {
+		t.Fatalf("NewPipeline() error = %v", err)
+	}
+
+	_, _, reasons, details, cacheAvailable := pipeline.queryProvider(
+		context.Background(),
+		fakeProvider{err: errors.New("prometheus returned status 400")},
+		Query{NodeName: "gpu-node-1", EventTime: time.Now().UTC()},
+		PodSourcePrometheus,
+	)
+	if cacheAvailable {
+		t.Fatal("cacheAvailable = true, want false")
+	}
+	if len(reasons) != 1 || reasons[0] != "prometheus_query_failed" {
+		t.Fatalf("reasons = %+v, want prometheus_query_failed", reasons)
+	}
+	if len(details) != 1 || details[0] != "prometheus: prometheus returned status 400" {
+		t.Fatalf("details = %+v, want provider error detail", details)
+	}
+}
+
 func TestPipelineRequirePodContextPublishesAndAlertsWhenProvidersFail(t *testing.T) {
 	eventTime := time.Now().UTC()
 	event := &pb.HealthEvent{
