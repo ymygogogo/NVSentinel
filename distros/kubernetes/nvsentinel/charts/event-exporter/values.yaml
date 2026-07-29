@@ -167,6 +167,7 @@ exporter:
       endpoint: "http://prometheus.monitoring.svc:9090"
       timeout: "3s"
       queryLookback: "5m"
+      queryRangeStep: "30s"
       # Optional Go template for Prometheus pod lookup queries.
       # Available variables: .NodeName, .QueryLookback, .GroupLeftLabels, .GroupLeftAnnotations.
       queryTemplate: ""

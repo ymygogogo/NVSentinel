@@ -9,18 +9,26 @@ import (
 )
 
 func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
+	eventTime := time.Date(2026, 7, 29, 10, 6, 59, 604634855, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/query" {
-			t.Fatalf("path = %s, want /api/v1/query", r.URL.Path)
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("path = %s, want /api/v1/query_range", r.URL.Path)
 		}
-		if r.URL.Query().Get("time") == "" {
-			t.Fatal("time query parameter is empty")
+		if got, want := r.URL.Query().Get("start"), eventTime.Add(-2*time.Minute).Format(time.RFC3339Nano); got != want {
+			t.Fatalf("start = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("end"), eventTime.Add(2*time.Minute).Format(time.RFC3339Nano); got != want {
+			t.Fatalf("end = %q, want %q", got, want)
+		}
+		if got := r.URL.Query().Get("step"); got != "15s" {
+			t.Fatalf("step = %q, want 15s", got)
 		}
 		_, _ = w.Write([]byte(`{
 			"status":"success",
-			"data":{"resultType":"vector","result":[
-				{"metric":{"namespace":"cci-a","pod":"train-1","node":"gpu-node-1","label_tenant_id":"tenant-a","label_task_id":"task-1","label_secret":"drop","annotation_platform_datacanvas_com_order_id":"order-1","annotation_platform_datacanvas_com_secret":"drop"},"value":[1710000000,"1"]},
-				{"metric":{"namespace":"kube-system","pod":"ignored","node":"gpu-node-1","label_tenant_id":"tenant-a"},"value":[1710000000,"1"]}
+			"data":{"resultType":"matrix","result":[
+				{"metric":{"namespace":"cci-a","pod":"train-1","node":"gpu-node-1","label_tenant_id":"tenant-a","label_task_id":"task-1","label_secret":"drop","annotation_platform_datacanvas_com_order_id":"order-1","annotation_platform_datacanvas_com_secret":"drop"},"values":[[1710000000,"1"],[1710000015,"1"]]},
+				{"metric":{"namespace":"cci-a","pod":"train-1","node":"gpu-node-1","label_tenant_id":"tenant-a","label_task_id":"task-1"},"values":[[1710000030,"1"]]},
+				{"metric":{"namespace":"kube-system","pod":"ignored","node":"gpu-node-1","label_tenant_id":"tenant-a"},"values":[[1710000000,"1"]]}
 			]}
 		}`))
 	}))
@@ -29,17 +37,18 @@ func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
 	provider := NewPrometheusProvider(PrometheusConfig{
 		Endpoint:            server.URL,
 		Timeout:             time.Second,
-		QueryLookback:       5 * time.Minute,
+		QueryLookback:       2 * time.Minute,
+		QueryRangeStep:      15 * time.Second,
 		LabelAllowlist:      []string{"tenant_id", "task_id"},
 		AnnotationAllowlist: []string{"platform.datacanvas.com/order-id"},
 	})
 
-	pods, err := provider.GetPods(context.Background(), Query{NodeName: "gpu-node-1", EventTime: time.Now().UTC()})
+	pods, err := provider.GetPods(context.Background(), Query{NodeName: "gpu-node-1", EventTime: eventTime})
 	if err != nil {
 		t.Fatalf("GetPods() error = %v", err)
 	}
 	if len(pods) != 2 {
-		t.Fatalf("len(pods) = %d, want 2 before namespace filtering", len(pods))
+		t.Fatalf("len(pods) = %d, want 2 before namespace filtering and after pod dedupe", len(pods))
 	}
 	if pods[0].Namespace != "cci-a" || pods[0].Name != "train-1" || pods[0].NodeName != "gpu-node-1" {
 		t.Fatalf("pod[0] = %+v", pods[0])
@@ -62,7 +71,7 @@ func TestPrometheusProviderUsesConfiguredQueryTemplate(t *testing.T) {
 	var gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("query")
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
 	}))
 	defer server.Close()
 

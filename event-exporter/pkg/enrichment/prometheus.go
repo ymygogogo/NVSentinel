@@ -19,6 +19,7 @@ type PrometheusConfig struct {
 	Endpoint             string
 	Timeout              time.Duration
 	QueryLookback        time.Duration
+	QueryRangeStep       time.Duration
 	QueryTemplate        string
 	LabelAllowlist       []string
 	AnnotationAllowlist  []string
@@ -48,6 +49,9 @@ func NewPrometheusProvider(cfg PrometheusConfig) *PrometheusProvider {
 	}
 	if cfg.QueryLookback == 0 {
 		cfg.QueryLookback = 5 * time.Minute
+	}
+	if cfg.QueryRangeStep == 0 {
+		cfg.QueryRangeStep = 30 * time.Second
 	}
 	if cfg.MaxConcurrentQueries <= 0 {
 		cfg.MaxConcurrentQueries = 5
@@ -84,13 +88,17 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := url.Parse(strings.TrimRight(p.cfg.Endpoint, "/") + "/api/v1/query")
+	endpoint, err := url.Parse(strings.TrimRight(p.cfg.Endpoint, "/") + "/api/v1/query_range")
 	if err != nil {
 		return nil, fmt.Errorf("parse prometheus endpoint: %w", err)
 	}
+	windowStart := query.EventTime.UTC().Add(-p.cfg.QueryLookback)
+	windowEnd := query.EventTime.UTC().Add(p.cfg.QueryLookback)
 	values := endpoint.Query()
 	values.Set("query", promQL)
-	values.Set("time", query.EventTime.UTC().Format(time.RFC3339Nano))
+	values.Set("start", windowStart.Format(time.RFC3339Nano))
+	values.Set("end", windowEnd.Format(time.RFC3339Nano))
+	values.Set("step", p.cfg.QueryRangeStep.String())
 	endpoint.RawQuery = values.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -118,6 +126,7 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 	}
 
 	pods := make([]PodSummary, 0, len(payload.Data.Result))
+	seen := map[string]struct{}{}
 	for _, result := range payload.Data.Result {
 		pod := result.toPodSummary(p.labelAllow, p.annotationAllow)
 		if pod.Namespace == "" || pod.Name == "" {
@@ -126,6 +135,11 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 		if pod.NodeName == "" {
 			pod.NodeName = query.NodeName
 		}
+		key := pod.Namespace + "/" + pod.Name
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		pods = append(pods, pod)
 	}
 
@@ -169,7 +183,7 @@ func (p *PrometheusProvider) query(nodeName string) (string, error) {
 	groupLeftLabels := p.groupLeftLabels()
 	queryTemplate := p.cfg.QueryTemplate
 	if queryTemplate == "" {
-		queryTemplate = `last_over_time(((kube_pod_info{node={{ printf "%q" .NodeName }} * on(namespace, pod) group_left({{ .GroupLeftLabels }}) kube_pod_labels){{ if .GroupLeftAnnotations }} * on(namespace, pod) group_left({{ .GroupLeftAnnotations }}) kube_pod_annotations{{ end }})[{{ .QueryLookback }}:])`
+		queryTemplate = `(kube_pod_info{node={{ printf "%q" .NodeName }}} * on(namespace, pod) group_left({{ .GroupLeftLabels }}) kube_pod_labels){{ if .GroupLeftAnnotations }} * on(namespace, pod) group_left({{ .GroupLeftAnnotations }}) kube_pod_annotations{{ end }}`
 	}
 
 	tmpl, err := template.New("prometheus-pod-query").Parse(queryTemplate)

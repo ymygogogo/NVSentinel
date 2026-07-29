@@ -53,6 +53,7 @@ enabled = true
 endpoint = "http://prometheus.monitoring.svc:9090"
 timeout = "3s"
 query_lookback = "5m"
+query_range_step = "15s"
 max_concurrent_queries = 5
 cache_ttl = "60s"
 
@@ -89,6 +90,9 @@ max_retries = 2
 	}
 	if enrichment.Prometheus.Endpoint != "http://prometheus.monitoring.svc:9090" {
 		t.Fatalf("Prometheus endpoint = %q", enrichment.Prometheus.Endpoint)
+	}
+	if got := enrichment.Prometheus.GetQueryRangeStep().String(); got != "15s" {
+		t.Fatalf("Prometheus query range step = %q, want 15s", got)
 	}
 	if enrichment.MissingPodContextAlert.WebhookURL == "" {
 		t.Fatal("WebhookURL should be parsed")

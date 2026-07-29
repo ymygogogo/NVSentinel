@@ -118,6 +118,7 @@ data:
     endpoint = "{{ .Values.exporter.enrichment.prometheus.endpoint }}"
     timeout = "{{ .Values.exporter.enrichment.prometheus.timeout }}"
     query_lookback = "{{ .Values.exporter.enrichment.prometheus.queryLookback }}"
+    query_range_step = "{{ .Values.exporter.enrichment.prometheus.queryRangeStep }}"
     query_template = {{ .Values.exporter.enrichment.prometheus.queryTemplate | quote }}
     max_concurrent_queries = {{ .Values.exporter.enrichment.prometheus.maxConcurrentQueries | int }}
     cache_ttl = "{{ .Values.exporter.enrichment.prometheus.cacheTTL }}"

@@ -23,17 +23,18 @@ import (
 )
 
 const (
-	defaultSinkTimeout    = 30 * time.Second
-	defaultBackfillMaxAge = 720 * time.Hour
-	defaultInitialBackoff = 1 * time.Second
-	defaultMaxBackoff     = 60 * time.Second
-	defaultCacheMaxAge    = 5 * time.Minute
-	defaultClockSkew      = 2 * time.Minute
-	defaultCacheSync      = 10 * time.Second
-	defaultPromTimeout    = 3 * time.Second
-	defaultQueryLookback  = 5 * time.Minute
-	defaultPromCacheTTL   = 60 * time.Second
-	defaultAlertTimeout   = 3 * time.Second
+	defaultSinkTimeout        = 30 * time.Second
+	defaultBackfillMaxAge     = 720 * time.Hour
+	defaultInitialBackoff     = 1 * time.Second
+	defaultMaxBackoff         = 60 * time.Second
+	defaultCacheMaxAge        = 5 * time.Minute
+	defaultClockSkew          = 2 * time.Minute
+	defaultCacheSync          = 10 * time.Second
+	defaultPromTimeout        = 3 * time.Second
+	defaultQueryLookback      = 5 * time.Minute
+	defaultPromQueryRangeStep = 30 * time.Second
+	defaultPromCacheTTL       = 60 * time.Second
+	defaultAlertTimeout       = 3 * time.Second
 )
 
 type Config struct {
@@ -164,6 +165,7 @@ type PrometheusEnrichmentConfig struct {
 	Endpoint             string `toml:"endpoint"`
 	Timeout              string `toml:"timeout"`
 	QueryLookback        string `toml:"query_lookback"`
+	QueryRangeStep       string `toml:"query_range_step"`
 	QueryTemplate        string `toml:"query_template"`
 	MaxConcurrentQueries int    `toml:"max_concurrent_queries"`
 	CacheTTL             string `toml:"cache_ttl"`
@@ -276,6 +278,10 @@ func (c *PrometheusEnrichmentConfig) GetTimeout() time.Duration {
 
 func (c *PrometheusEnrichmentConfig) GetQueryLookback() time.Duration {
 	return parseDurationOrDefault(c.QueryLookback, defaultQueryLookback, "prometheus enrichment query lookback")
+}
+
+func (c *PrometheusEnrichmentConfig) GetQueryRangeStep() time.Duration {
+	return parseDurationOrDefault(c.QueryRangeStep, defaultPromQueryRangeStep, "prometheus enrichment query range step")
 }
 
 func (c *PrometheusEnrichmentConfig) GetCacheTTL() time.Duration {
