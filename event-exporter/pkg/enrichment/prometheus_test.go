@@ -50,3 +50,29 @@ func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
 		t.Fatalf("secret label should not be included: %+v", pods[0].Labels)
 	}
 }
+
+func TestPrometheusProviderUsesConfiguredQueryTemplate(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+	defer server.Close()
+
+	provider := NewPrometheusProvider(PrometheusConfig{
+		Endpoint:       server.URL,
+		Timeout:        time.Second,
+		QueryLookback:  10 * time.Minute,
+		LabelAllowlist: []string{"tenant_id", "task_id"},
+		QueryTemplate:  `custom_pod_query{node="{{ .NodeName }}", labels="{{ .GroupLeftLabels }}"}[{{ .QueryLookback }}:]`,
+	})
+
+	_, err := provider.GetPods(context.Background(), Query{NodeName: "gpu-node-1", EventTime: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("GetPods() error = %v", err)
+	}
+	want := `custom_pod_query{node="gpu-node-1", labels="label_tenant_id, label_task_id"}[10m0s:]`
+	if gotQuery != want {
+		t.Fatalf("query = %q, want %q", gotQuery, want)
+	}
+}

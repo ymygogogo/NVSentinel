@@ -1,6 +1,7 @@
 package enrichment
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -15,6 +17,7 @@ type PrometheusConfig struct {
 	Endpoint             string
 	Timeout              time.Duration
 	QueryLookback        time.Duration
+	QueryTemplate        string
 	LabelAllowlist       []string
 	MaxConcurrentQueries int
 	CacheTTL             time.Duration
@@ -72,7 +75,10 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 		return nil, ctx.Err()
 	}
 
-	promQL := p.query(query.NodeName)
+	promQL, err := p.query(query.NodeName)
+	if err != nil {
+		return nil, err
+	}
 	endpoint, err := url.Parse(strings.TrimRight(p.cfg.Endpoint, "/") + "/api/v1/query")
 	if err != nil {
 		return nil, fmt.Errorf("parse prometheus endpoint: %w", err)
@@ -152,10 +158,33 @@ func (p *PrometheusProvider) setCached(key string, pods []PodSummary) {
 	}
 }
 
-func (p *PrometheusProvider) query(nodeName string) string {
+func (p *PrometheusProvider) query(nodeName string) (string, error) {
 	lookback := p.cfg.QueryLookback.String()
 	groupLeftLabels := p.groupLeftLabels()
-	return fmt.Sprintf(`last_over_time((kube_pod_info{node=%q} * on(namespace, pod) group_left(%s) kube_pod_labels)[%s:])`, nodeName, groupLeftLabels, lookback)
+	queryTemplate := p.cfg.QueryTemplate
+	if queryTemplate == "" {
+		queryTemplate = `last_over_time((kube_pod_info{node={{ printf "%q" .NodeName }} * on(namespace, pod) group_left({{ .GroupLeftLabels }}) kube_pod_labels)[{{ .QueryLookback }}:])`
+	}
+
+	tmpl, err := template.New("prometheus-pod-query").Parse(queryTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse prometheus query template: %w", err)
+	}
+
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, struct {
+		NodeName        string
+		QueryLookback   string
+		GroupLeftLabels string
+	}{
+		NodeName:        nodeName,
+		QueryLookback:   lookback,
+		GroupLeftLabels: groupLeftLabels,
+	}); err != nil {
+		return "", fmt.Errorf("render prometheus query template: %w", err)
+	}
+
+	return rendered.String(), nil
 }
 
 func (p *PrometheusProvider) groupLeftLabels() string {

@@ -119,7 +119,7 @@ func (p *Pipeline) Enrich(
 }
 
 func (p *Pipeline) findPods(ctx context.Context, query Query, mode string) ([]PodSummary, string, []string) {
-	if mode == ProcessingModeBackfill {
+	if mode == ProcessingModeBackfill || p.isHistorical(query.EventTime) {
 		pods, source, errors, _ := p.queryProvider(ctx, p.cfg.HistoricalProvider, query, PodSourcePrometheus)
 		return pods, source, errors
 	}

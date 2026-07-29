@@ -164,6 +164,7 @@ type PrometheusEnrichmentConfig struct {
 	Endpoint             string `toml:"endpoint"`
 	Timeout              string `toml:"timeout"`
 	QueryLookback        string `toml:"query_lookback"`
+	QueryTemplate        string `toml:"query_template"`
 	MaxConcurrentQueries int    `toml:"max_concurrent_queries"`
 	CacheTTL             string `toml:"cache_ttl"`
 }

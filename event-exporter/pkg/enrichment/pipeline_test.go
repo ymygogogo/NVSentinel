@@ -91,7 +91,7 @@ func TestPipelineRealtimeUsesCacheAndNormalizesPayload(t *testing.T) {
 	}
 }
 
-func TestPipelineStreamUsesCacheEvenWhenEventTimeIsOld(t *testing.T) {
+func TestPipelineStreamUsesHistoricalProviderWhenEventTimeIsOld(t *testing.T) {
 	eventTime := time.Now().Add(-30 * time.Minute).UTC()
 	event := &pb.HealthEvent{
 		NodeName:           "gpu-node-1",
@@ -122,11 +122,11 @@ func TestPipelineStreamUsesCacheEvenWhenEventTimeIsOld(t *testing.T) {
 	}
 
 	enrichment := cloudEvent.Data["enrichment"].(EnrichmentData)
-	if enrichment.PodSource != PodSourceWatchCache {
-		t.Fatalf("PodSource = %q, want %q", enrichment.PodSource, PodSourceWatchCache)
+	if enrichment.PodSource != PodSourcePrometheus {
+		t.Fatalf("PodSource = %q, want %q", enrichment.PodSource, PodSourcePrometheus)
 	}
-	if got := enrichment.Pods[0].Name; got != "pod-a" {
-		t.Fatalf("pod name = %q, want pod-a", got)
+	if got := enrichment.Pods[0].Name; got != "pod-history" {
+		t.Fatalf("pod name = %q, want pod-history", got)
 	}
 }
 
