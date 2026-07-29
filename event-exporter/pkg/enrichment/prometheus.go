@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -104,7 +105,8 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("prometheus returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("prometheus returned status %d: %s; query=%s", resp.StatusCode, strings.TrimSpace(string(body)), promQL)
 	}
 
 	var payload prometheusResponse
