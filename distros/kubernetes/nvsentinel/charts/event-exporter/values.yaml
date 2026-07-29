@@ -168,7 +168,7 @@ exporter:
       timeout: "3s"
       queryLookback: "5m"
       # Optional Go template for Prometheus pod lookup queries.
-      # Available variables: .NodeName, .QueryLookback, .GroupLeftLabels.
+      # Available variables: .NodeName, .QueryLookback, .GroupLeftLabels, .GroupLeftAnnotations.
       queryTemplate: ""
       maxConcurrentQueries: 5
       cacheTTL: "60s"

@@ -19,7 +19,7 @@ func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"status":"success",
 			"data":{"resultType":"vector","result":[
-				{"metric":{"namespace":"cci-a","pod":"train-1","node":"gpu-node-1","label_tenant_id":"tenant-a","label_task_id":"task-1","label_secret":"drop"},"value":[1710000000,"1"]},
+				{"metric":{"namespace":"cci-a","pod":"train-1","node":"gpu-node-1","label_tenant_id":"tenant-a","label_task_id":"task-1","label_secret":"drop","annotation_platform_datacanvas_com_order_id":"order-1","annotation_platform_datacanvas_com_secret":"drop"},"value":[1710000000,"1"]},
 				{"metric":{"namespace":"kube-system","pod":"ignored","node":"gpu-node-1","label_tenant_id":"tenant-a"},"value":[1710000000,"1"]}
 			]}
 		}`))
@@ -27,10 +27,11 @@ func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
 	defer server.Close()
 
 	provider := NewPrometheusProvider(PrometheusConfig{
-		Endpoint:       server.URL,
-		Timeout:        time.Second,
-		QueryLookback:  5 * time.Minute,
-		LabelAllowlist: []string{"tenant_id", "task_id"},
+		Endpoint:            server.URL,
+		Timeout:             time.Second,
+		QueryLookback:       5 * time.Minute,
+		LabelAllowlist:      []string{"tenant_id", "task_id"},
+		AnnotationAllowlist: []string{"platform.datacanvas.com/order-id"},
 	})
 
 	pods, err := provider.GetPods(context.Background(), Query{NodeName: "gpu-node-1", EventTime: time.Now().UTC()})
@@ -49,6 +50,12 @@ func TestPrometheusProviderReturnsPodSummaries(t *testing.T) {
 	if _, ok := pods[0].Labels["secret"]; ok {
 		t.Fatalf("secret label should not be included: %+v", pods[0].Labels)
 	}
+	if pods[0].Annotations["platform.datacanvas.com/order-id"] != "order-1" {
+		t.Fatalf("annotations = %+v, want order id", pods[0].Annotations)
+	}
+	if _, ok := pods[0].Annotations["platform.datacanvas.com/secret"]; ok {
+		t.Fatalf("secret annotation should not be included: %+v", pods[0].Annotations)
+	}
 }
 
 func TestPrometheusProviderUsesConfiguredQueryTemplate(t *testing.T) {
@@ -60,18 +67,19 @@ func TestPrometheusProviderUsesConfiguredQueryTemplate(t *testing.T) {
 	defer server.Close()
 
 	provider := NewPrometheusProvider(PrometheusConfig{
-		Endpoint:       server.URL,
-		Timeout:        time.Second,
-		QueryLookback:  10 * time.Minute,
-		LabelAllowlist: []string{"tenant_id", "task_id"},
-		QueryTemplate:  `custom_pod_query{node="{{ .NodeName }}", labels="{{ .GroupLeftLabels }}"}[{{ .QueryLookback }}:]`,
+		Endpoint:            server.URL,
+		Timeout:             time.Second,
+		QueryLookback:       10 * time.Minute,
+		LabelAllowlist:      []string{"tenant_id", "task_id"},
+		AnnotationAllowlist: []string{"platform.datacanvas.com/order-id"},
+		QueryTemplate:       `custom_pod_query{node="{{ .NodeName }}", labels="{{ .GroupLeftLabels }}", annotations="{{ .GroupLeftAnnotations }}"}[{{ .QueryLookback }}:]`,
 	})
 
 	_, err := provider.GetPods(context.Background(), Query{NodeName: "gpu-node-1", EventTime: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("GetPods() error = %v", err)
 	}
-	want := `custom_pod_query{node="gpu-node-1", labels="label_tenant_id, label_task_id"}[10m0s:]`
+	want := `custom_pod_query{node="gpu-node-1", labels="label_tenant_id, label_task_id", annotations="annotation_platform_datacanvas_com_order_id"}[10m0s:]`
 	if gotQuery != want {
 		t.Fatalf("query = %q, want %q", gotQuery, want)
 	}

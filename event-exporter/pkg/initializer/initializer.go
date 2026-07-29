@@ -343,6 +343,7 @@ func initializeEnricher(ctx context.Context, cfg *config.Config, alerter enrichm
 			QueryLookback:        promCfg.GetQueryLookback(),
 			QueryTemplate:        promCfg.QueryTemplate,
 			LabelAllowlist:       podCfg.LabelAllowlist,
+			AnnotationAllowlist:  podCfg.AnnotationAllowlist,
 			MaxConcurrentQueries: promCfg.MaxConcurrentQueries,
 			CacheTTL:             promCfg.GetCacheTTL(),
 		})

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -19,18 +20,20 @@ type PrometheusConfig struct {
 	QueryLookback        time.Duration
 	QueryTemplate        string
 	LabelAllowlist       []string
+	AnnotationAllowlist  []string
 	MaxConcurrentQueries int
 	CacheTTL             time.Duration
 }
 
 type PrometheusProvider struct {
-	cfg        PrometheusConfig
-	httpClient *http.Client
-	labelAllow map[string]struct{}
-	sem        chan struct{}
-	cacheTTL   time.Duration
-	mu         sync.Mutex
-	cache      map[string]prometheusCacheEntry
+	cfg             PrometheusConfig
+	httpClient      *http.Client
+	labelAllow      map[string]string
+	annotationAllow map[string]string
+	sem             chan struct{}
+	cacheTTL        time.Duration
+	mu              sync.Mutex
+	cache           map[string]prometheusCacheEntry
 }
 
 type prometheusCacheEntry struct {
@@ -49,12 +52,13 @@ func NewPrometheusProvider(cfg PrometheusConfig) *PrometheusProvider {
 		cfg.MaxConcurrentQueries = 5
 	}
 	provider := &PrometheusProvider{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
-		labelAllow: stringSet(cfg.LabelAllowlist),
-		sem:        make(chan struct{}, cfg.MaxConcurrentQueries),
-		cacheTTL:   cfg.CacheTTL,
-		cache:      map[string]prometheusCacheEntry{},
+		cfg:             cfg,
+		httpClient:      &http.Client{Timeout: cfg.Timeout},
+		labelAllow:      prometheusAllowMap("label", cfg.LabelAllowlist),
+		annotationAllow: prometheusAllowMap("annotation", cfg.AnnotationAllowlist),
+		sem:             make(chan struct{}, cfg.MaxConcurrentQueries),
+		cacheTTL:        cfg.CacheTTL,
+		cache:           map[string]prometheusCacheEntry{},
 	}
 	return provider
 }
@@ -113,7 +117,7 @@ func (p *PrometheusProvider) GetPods(ctx context.Context, query Query) ([]PodSum
 
 	pods := make([]PodSummary, 0, len(payload.Data.Result))
 	for _, result := range payload.Data.Result {
-		pod := result.toPodSummary(p.labelAllow)
+		pod := result.toPodSummary(p.labelAllow, p.annotationAllow)
 		if pod.Namespace == "" || pod.Name == "" {
 			continue
 		}
@@ -163,7 +167,7 @@ func (p *PrometheusProvider) query(nodeName string) (string, error) {
 	groupLeftLabels := p.groupLeftLabels()
 	queryTemplate := p.cfg.QueryTemplate
 	if queryTemplate == "" {
-		queryTemplate = `last_over_time((kube_pod_info{node={{ printf "%q" .NodeName }} * on(namespace, pod) group_left({{ .GroupLeftLabels }}) kube_pod_labels)[{{ .QueryLookback }}:])`
+		queryTemplate = `last_over_time(((kube_pod_info{node={{ printf "%q" .NodeName }} * on(namespace, pod) group_left({{ .GroupLeftLabels }}) kube_pod_labels){{ if .GroupLeftAnnotations }} * on(namespace, pod) group_left({{ .GroupLeftAnnotations }}) kube_pod_annotations{{ end }})[{{ .QueryLookback }}:])`
 	}
 
 	tmpl, err := template.New("prometheus-pod-query").Parse(queryTemplate)
@@ -173,13 +177,15 @@ func (p *PrometheusProvider) query(nodeName string) (string, error) {
 
 	var rendered bytes.Buffer
 	if err := tmpl.Execute(&rendered, struct {
-		NodeName        string
-		QueryLookback   string
-		GroupLeftLabels string
+		NodeName             string
+		QueryLookback        string
+		GroupLeftLabels      string
+		GroupLeftAnnotations string
 	}{
-		NodeName:        nodeName,
-		QueryLookback:   lookback,
-		GroupLeftLabels: groupLeftLabels,
+		NodeName:             nodeName,
+		QueryLookback:        lookback,
+		GroupLeftLabels:      groupLeftLabels,
+		GroupLeftAnnotations: p.groupLeftAnnotations(),
 	}); err != nil {
 		return "", fmt.Errorf("render prometheus query template: %w", err)
 	}
@@ -188,11 +194,11 @@ func (p *PrometheusProvider) query(nodeName string) (string, error) {
 }
 
 func (p *PrometheusProvider) groupLeftLabels() string {
-	labels := make([]string, 0, len(p.cfg.LabelAllowlist))
-	for _, label := range p.cfg.LabelAllowlist {
-		labels = append(labels, "label_"+label)
-	}
-	return strings.Join(labels, ", ")
+	return strings.Join(prometheusMetricNames("label", p.cfg.LabelAllowlist), ", ")
+}
+
+func (p *PrometheusProvider) groupLeftAnnotations() string {
+	return strings.Join(prometheusMetricNames("annotation", p.cfg.AnnotationAllowlist), ", ")
 }
 
 type prometheusResponse struct {
@@ -206,24 +212,27 @@ type prometheusResult struct {
 	Metric map[string]string `json:"metric"`
 }
 
-func (r prometheusResult) toPodSummary(labelAllow map[string]struct{}) PodSummary {
+func (r prometheusResult) toPodSummary(labelAllow, annotationAllow map[string]string) PodSummary {
 	pod := PodSummary{
-		Namespace: r.Metric["namespace"],
-		Name:      firstNonEmpty(r.Metric["pod"], r.Metric["pod_name"]),
-		NodeName:  firstNonEmpty(r.Metric["node"], r.Metric["node_name"]),
-		Labels:    map[string]string{},
+		Namespace:   r.Metric["namespace"],
+		Name:        firstNonEmpty(r.Metric["pod"], r.Metric["pod_name"]),
+		NodeName:    firstNonEmpty(r.Metric["node"], r.Metric["node_name"]),
+		Labels:      map[string]string{},
+		Annotations: map[string]string{},
 	}
 	for key, value := range r.Metric {
-		if !strings.HasPrefix(key, "label_") {
-			continue
-		}
-		labelName := strings.TrimPrefix(key, "label_")
-		if _, ok := labelAllow[labelName]; ok {
+		if labelName, ok := labelAllow[key]; ok {
 			pod.Labels[labelName] = value
+		}
+		if annotationName, ok := annotationAllow[key]; ok {
+			pod.Annotations[annotationName] = value
 		}
 	}
 	if len(pod.Labels) == 0 {
 		pod.Labels = nil
+	}
+	if len(pod.Annotations) == 0 {
+		pod.Annotations = nil
 	}
 	return pod
 }
@@ -235,4 +244,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+var prometheusLabelSanitizer = regexp.MustCompile(`[^A-Za-z0-9_]`)
+
+func prometheusMetricNames(prefix string, keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, prometheusMetricName(prefix, key))
+	}
+	return out
+}
+
+func prometheusAllowMap(prefix string, keys []string) map[string]string {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		out[prometheusMetricName(prefix, key)] = key
+	}
+	return out
+}
+
+func prometheusMetricName(prefix, key string) string {
+	return prefix + "_" + prometheusLabelSanitizer.ReplaceAllString(key, "_")
 }
