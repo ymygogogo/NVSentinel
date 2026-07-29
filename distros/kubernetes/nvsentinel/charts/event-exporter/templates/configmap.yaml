@@ -26,10 +26,8 @@ data:
     client_name = "{{ .Values.exporter.clientName }}"
 
     [exporter.metadata]
-    cluster = "{{ .Values.exporter.metadata.cluster }}"
-    environment = "{{ .Values.exporter.metadata.environment }}"
     {{- range $key, $value := .Values.exporter.metadata }}
-    {{- if and (ne $key "cluster") (ne $key "environment") }}
+    {{- if $value }}
     {{ $key }} = "{{ $value }}"
     {{- end }}
     {{- end }}
