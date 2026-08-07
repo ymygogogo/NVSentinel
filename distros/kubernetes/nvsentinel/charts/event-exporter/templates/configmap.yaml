@@ -113,6 +113,11 @@ data:
     max_payload_bytes = {{ .Values.exporter.enrichment.podMetadata.maxPayloadBytes | int }}
     cache_sync_timeout = "{{ .Values.exporter.enrichment.podMetadata.cacheSyncTimeout }}"
 
+    [exporter.enrichment.node_metadata]
+    enabled = {{ .Values.exporter.enrichment.nodeMetadata.enabled }}
+    label_allowlist = [{{- range $i, $label := .Values.exporter.enrichment.nodeMetadata.labelAllowlist }}{{ if $i }}, {{ end }}"{{ $label }}"{{- end }}]
+    cache_sync_timeout = "{{ .Values.exporter.enrichment.nodeMetadata.cacheSyncTimeout }}"
+
     [exporter.enrichment.prometheus]
     enabled = {{ .Values.exporter.enrichment.prometheus.enabled }}
     endpoint = "{{ .Values.exporter.enrichment.prometheus.endpoint }}"

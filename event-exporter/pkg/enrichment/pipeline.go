@@ -20,8 +20,11 @@ type Config struct {
 	NamespaceExcludeRegex    string
 	LabelAllowlist           []string
 	AnnotationAllowlist      []string
+	NodeLabelAllowlist       []string
+	PodMetadataEnabled       bool
 	MaxPodsPerNode           int
 	MaxPayloadBytes          int
+	NodeProvider             NodeProvider
 	RealtimeProvider         Provider
 	RealtimeFallbackProvider Provider
 	HistoricalProvider       Provider
@@ -46,6 +49,9 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 	if cfg.MaxPodsPerNode == 0 {
 		cfg.MaxPodsPerNode = 1000
+	}
+	if !cfg.PodMetadataEnabled && (cfg.RealtimeProvider != nil || cfg.RealtimeFallbackProvider != nil || cfg.HistoricalProvider != nil) {
+		cfg.PodMetadataEnabled = true
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -77,7 +83,30 @@ func (p *Pipeline) Enrich(
 
 	eventTime, ok := generatedTime(event)
 	if !ok {
-		return p.applyNoContext(ctx, event, cloudEvent, "missing_generated_timestamp", "", nil)
+		node := p.findNode(ctx, event.GetNodeName())
+		return p.applyNoContext(ctx, event, cloudEvent, "missing_generated_timestamp", "", nil, node)
+	}
+
+	if !p.cfg.PodMetadataEnabled {
+		node := p.findNode(ctx, event.GetNodeName())
+		status := StatusEmpty
+		reason := "pod_metadata_disabled"
+		if node != nil {
+			status = StatusMatched
+			reason = ""
+		}
+		cloudEvent.Data["enrichment"] = EnrichmentData{
+			SchemaVersion:      SchemaVersion,
+			Status:             status,
+			EventTime:          eventTime.UTC().Format(time.RFC3339Nano),
+			PodResultTruncated: false,
+			PodCountTotal:      0,
+			PodCountReturned:   0,
+			Pods:               []PodSummary{},
+			Node:               node,
+			Reason:             reason,
+		}
+		return Result{}, nil
 	}
 
 	query := Query{NodeName: event.GetNodeName(), EventTime: eventTime}
@@ -88,7 +117,8 @@ func (p *Pipeline) Enrich(
 		if len(errors) > 0 {
 			reason = strings.Join(errors, ",")
 		}
-		return p.applyNoContext(ctx, event, cloudEvent, reason, source, errorDetails)
+		node := p.findNode(ctx, event.GetNodeName())
+		return p.applyNoContext(ctx, event, cloudEvent, reason, source, errorDetails, node)
 	}
 
 	truncated := false
@@ -102,6 +132,7 @@ func (p *Pipeline) Enrich(
 		truncated = true
 	}
 	pods = limitedPods
+	node := p.findNode(ctx, event.GetNodeName())
 
 	cloudEvent.Data["enrichment"] = EnrichmentData{
 		SchemaVersion:      SchemaVersion,
@@ -112,6 +143,7 @@ func (p *Pipeline) Enrich(
 		PodCountTotal:      total,
 		PodCountReturned:   len(pods),
 		Pods:               pods,
+		Node:               node,
 		Reason:             "",
 	}
 
@@ -158,6 +190,18 @@ func (p *Pipeline) queryProvider(ctx context.Context, provider Provider, query Q
 	return pods, source, nil, nil, true
 }
 
+func (p *Pipeline) findNode(ctx context.Context, nodeName string) *NodeSummary {
+	if p.cfg.NodeProvider == nil || len(p.cfg.NodeLabelAllowlist) == 0 {
+		return nil
+	}
+	node, err := p.cfg.NodeProvider.GetNode(ctx, nodeName)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to enrich event with node labels", "node", nodeName, "error", err)
+		return nil
+	}
+	return normalizeNode(node, stringSet(p.cfg.NodeLabelAllowlist))
+}
+
 func (p *Pipeline) isHistorical(eventTime time.Time) bool {
 	now := p.cfg.Now().UTC()
 	if eventTime.After(now.Add(p.cfg.ClockSkewTolerance)) {
@@ -173,6 +217,7 @@ func (p *Pipeline) applyNoContext(
 	reason string,
 	source string,
 	errorDetails []string,
+	node *NodeSummary,
 ) (Result, error) {
 	status := StatusFailed
 	if strings.Contains(reason, "_empty") {
@@ -193,6 +238,7 @@ func (p *Pipeline) applyNoContext(
 		PodCountTotal:      0,
 		PodCountReturned:   0,
 		Pods:               []PodSummary{},
+		Node:               node,
 		Reason:             reason,
 	}
 

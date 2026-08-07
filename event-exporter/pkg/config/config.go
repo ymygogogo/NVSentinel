@@ -141,6 +141,7 @@ type EnrichmentConfig struct {
 	CurrentCacheMaxEventAge string                       `toml:"current_cache_max_event_age"`
 	ClockSkewTolerance      string                       `toml:"clock_skew_tolerance"`
 	PodMetadata             PodMetadataEnrichmentConfig  `toml:"pod_metadata"`
+	NodeMetadata            NodeMetadataEnrichmentConfig `toml:"node_metadata"`
 	Prometheus              PrometheusEnrichmentConfig   `toml:"prometheus"`
 	MissingPodContextAlert  MissingPodContextAlertConfig `toml:"missing_pod_context_alert"`
 }
@@ -158,6 +159,12 @@ type PodMetadataEnrichmentConfig struct {
 	MaxPodsPerNode         int      `toml:"max_pods_per_node"`
 	MaxPayloadBytes        int      `toml:"max_payload_bytes"`
 	CacheSyncTimeout       string   `toml:"cache_sync_timeout"`
+}
+
+type NodeMetadataEnrichmentConfig struct {
+	Enabled          bool     `toml:"enabled"`
+	LabelAllowlist   []string `toml:"label_allowlist"`
+	CacheSyncTimeout string   `toml:"cache_sync_timeout"`
 }
 
 type PrometheusEnrichmentConfig struct {
@@ -270,6 +277,10 @@ func (c *EnrichmentConfig) GetClockSkewTolerance() time.Duration {
 
 func (c *PodMetadataEnrichmentConfig) GetCacheSyncTimeout() time.Duration {
 	return parseDurationOrDefault(c.CacheSyncTimeout, defaultCacheSync, "enrichment cache sync timeout")
+}
+
+func (c *NodeMetadataEnrichmentConfig) GetCacheSyncTimeout() time.Duration {
+	return parseDurationOrDefault(c.CacheSyncTimeout, defaultCacheSync, "node enrichment cache sync timeout")
 }
 
 func (c *PrometheusEnrichmentConfig) GetTimeout() time.Duration {

@@ -33,6 +33,11 @@ type PodSummary struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+type NodeSummary struct {
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
 type EnrichmentData struct {
 	SchemaVersion      string       `json:"schemaVersion"`
 	Status             string       `json:"status"`
@@ -42,6 +47,7 @@ type EnrichmentData struct {
 	PodCountTotal      int          `json:"podCountTotal"`
 	PodCountReturned   int          `json:"podCountReturned"`
 	Pods               []PodSummary `json:"pods"`
+	Node               *NodeSummary `json:"node,omitempty"`
 	Reason             string       `json:"reason"`
 }
 
@@ -61,6 +67,10 @@ type EventEnricher interface {
 
 type Provider interface {
 	GetPods(ctx context.Context, query Query) ([]PodSummary, error)
+}
+
+type NodeProvider interface {
+	GetNode(ctx context.Context, name string) (*NodeSummary, error)
 }
 
 type Alerter interface {

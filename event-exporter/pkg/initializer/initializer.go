@@ -316,15 +316,16 @@ func initializeEnrichmentAlerter(cfg *config.Config) enrichment.Alerter {
 
 func initializeEnricher(ctx context.Context, cfg *config.Config, alerter enrichment.Alerter) (enrichment.EventEnricher, error) {
 	enrichmentCfg := cfg.Exporter.Enrichment
-	if !enrichmentCfg.Enabled || !enrichmentCfg.PodMetadata.Enabled {
+	if !enrichmentCfg.Enabled || (!enrichmentCfg.PodMetadata.Enabled && !enrichmentCfg.NodeMetadata.Enabled) {
 		return nil, nil
 	}
 
 	podCfg := enrichmentCfg.PodMetadata
+	nodeCfg := enrichmentCfg.NodeMetadata
 	promCfg := enrichmentCfg.Prometheus
 
 	var realtimeProvider enrichment.Provider
-	if podCfg.RealtimeSource == "kubernetes-watch-cache" {
+	if podCfg.Enabled && podCfg.RealtimeSource == "kubernetes-watch-cache" {
 		provider, err := enrichment.NewKubernetesPodWatchCache(ctx, enrichment.PodCacheConfig{
 			LabelSelector:    podCfg.LabelSelector,
 			CacheSyncTimeout: podCfg.GetCacheSyncTimeout(),
@@ -335,8 +336,19 @@ func initializeEnricher(ctx context.Context, cfg *config.Config, alerter enrichm
 		realtimeProvider = provider
 	}
 
+	var nodeProvider enrichment.NodeProvider
+	if nodeCfg.Enabled {
+		provider, err := enrichment.NewKubernetesNodeWatchCache(ctx, enrichment.NodeCacheConfig{
+			CacheSyncTimeout: nodeCfg.GetCacheSyncTimeout(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		nodeProvider = provider
+	}
+
 	var prometheusProvider enrichment.Provider
-	if promCfg.Enabled {
+	if podCfg.Enabled && promCfg.Enabled {
 		prometheusProvider = enrichment.NewPrometheusProvider(enrichment.PrometheusConfig{
 			Endpoint:             promCfg.Endpoint,
 			Timeout:              promCfg.GetTimeout(),
@@ -359,8 +371,11 @@ func initializeEnricher(ctx context.Context, cfg *config.Config, alerter enrichm
 		NamespaceExcludeRegex:    podCfg.NamespaceExcludeRegex,
 		LabelAllowlist:           podCfg.LabelAllowlist,
 		AnnotationAllowlist:      podCfg.AnnotationAllowlist,
+		NodeLabelAllowlist:       nodeCfg.LabelAllowlist,
+		PodMetadataEnabled:       podCfg.Enabled,
 		MaxPodsPerNode:           podCfg.MaxPodsPerNode,
 		MaxPayloadBytes:          podCfg.MaxPayloadBytes,
+		NodeProvider:             nodeProvider,
 		RealtimeProvider:         realtimeProvider,
 		RealtimeFallbackProvider: prometheusProvider,
 		HistoricalProvider:       prometheusProvider,

@@ -162,6 +162,11 @@ exporter:
       maxPayloadBytes: 2097152
       cacheSyncTimeout: "10s"
 
+    nodeMetadata:
+      enabled: false
+      labelAllowlist: []
+      cacheSyncTimeout: "10s"
+
     prometheus:
       enabled: false
       endpoint: "http://prometheus.monitoring.svc:9090"

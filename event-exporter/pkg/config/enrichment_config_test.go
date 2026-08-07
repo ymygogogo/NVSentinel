@@ -48,6 +48,11 @@ max_pods_per_node = 500
 max_payload_bytes = 1048576
 cache_sync_timeout = "10s"
 
+[exporter.enrichment.node_metadata]
+enabled = true
+label_allowlist = ["cloudnative.dc.com/lifeline-managed", "topology.kubernetes.io/zone"]
+cache_sync_timeout = "15s"
+
 [exporter.enrichment.prometheus]
 enabled = true
 endpoint = "http://prometheus.monitoring.svc:9090"
@@ -87,6 +92,15 @@ max_retries = 2
 	}
 	if got := enrichment.PodMetadata.LabelAllowlist; len(got) != 2 || got[0] != "tenant_id" || got[1] != "task_id" {
 		t.Fatalf("LabelAllowlist = %#v", got)
+	}
+	if !enrichment.NodeMetadata.Enabled {
+		t.Fatal("NodeMetadata.Enabled = false, want true")
+	}
+	if got := enrichment.NodeMetadata.LabelAllowlist; len(got) != 2 || got[0] != "cloudnative.dc.com/lifeline-managed" || got[1] != "topology.kubernetes.io/zone" {
+		t.Fatalf("NodeMetadata.LabelAllowlist = %#v", got)
+	}
+	if got := enrichment.NodeMetadata.GetCacheSyncTimeout().String(); got != "15s" {
+		t.Fatalf("NodeMetadata cache sync timeout = %q, want 15s", got)
 	}
 	if enrichment.Prometheus.Endpoint != "http://prometheus.monitoring.svc:9090" {
 		t.Fatalf("Prometheus endpoint = %q", enrichment.Prometheus.Endpoint)

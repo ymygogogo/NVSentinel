@@ -50,3 +50,17 @@ Whether event-exporter needs Pod watch RBAC for realtime enrichment.
 {{- define "event-exporter.podWatchEnabled" -}}
 {{- if and .Values.exporter.enrichment.enabled .Values.exporter.enrichment.podMetadata.enabled (eq .Values.exporter.enrichment.podMetadata.realtimeSource "kubernetes-watch-cache") -}}true{{- else -}}false{{- end -}}
 {{- end }}
+
+{{/*
+Whether event-exporter needs Node watch RBAC for node label enrichment.
+*/}}
+{{- define "event-exporter.nodeWatchEnabled" -}}
+{{- if and .Values.exporter.enrichment.enabled .Values.exporter.enrichment.nodeMetadata.enabled -}}true{{- else -}}false{{- end -}}
+{{- end }}
+
+{{/*
+Whether event-exporter needs Kubernetes watch RBAC.
+*/}}
+{{- define "event-exporter.kubernetesWatchEnabled" -}}
+{{- if or (eq (include "event-exporter.podWatchEnabled" .) "true") (eq (include "event-exporter.nodeWatchEnabled" .) "true") -}}true{{- else -}}false{{- end -}}
+{{- end }}

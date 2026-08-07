@@ -69,6 +69,15 @@ func (f *filter) normalizePods(pods []PodSummary) []PodSummary {
 	return out
 }
 
+func normalizeNode(node *NodeSummary, allow map[string]struct{}) *NodeSummary {
+	if node == nil || node.Name == "" {
+		return nil
+	}
+	out := *node
+	out.Labels = allowMap(node.Labels, allow)
+	return &out
+}
+
 func allowMap(input map[string]string, allow map[string]struct{}) map[string]string {
 	if len(input) == 0 || len(allow) == 0 {
 		return nil

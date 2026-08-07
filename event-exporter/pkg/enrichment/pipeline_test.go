@@ -21,6 +21,15 @@ func (f fakeProvider) GetPods(context.Context, Query) ([]PodSummary, error) {
 	return f.pods, f.err
 }
 
+type fakeNodeProvider struct {
+	node *NodeSummary
+	err  error
+}
+
+func (f fakeNodeProvider) GetNode(context.Context, string) (*NodeSummary, error) {
+	return f.node, f.err
+}
+
 type recordingAlerter struct {
 	calls int
 }
@@ -48,7 +57,9 @@ func TestPipelineRealtimeUsesCacheAndNormalizesPayload(t *testing.T) {
 		NamespaceExcludeRegex:    "^(kube-system|nvsentinel)$",
 		LabelAllowlist:           []string{"tenant_id", "task_id"},
 		AnnotationAllowlist:      []string{"platform.example.com/order-id"},
+		NodeLabelAllowlist:       []string{"cloudnative.dc.com/lifeline-managed", "topology.kubernetes.io/zone"},
 		MaxPodsPerNode:           1000,
+		NodeProvider:             fakeNodeProvider{node: &NodeSummary{Name: "gpu-node-1", Labels: map[string]string{"cloudnative.dc.com/lifeline-managed": "enable", "topology.kubernetes.io/zone": "zone-a", "secret": "drop"}}},
 		RealtimeProvider:         fakeProvider{pods: []PodSummary{{Namespace: "cci-a", Name: "pod-a", NodeName: "gpu-node-1", Labels: map[string]string{"tenant_id": "t1", "secret": "drop"}, Annotations: map[string]string{"platform.example.com/order-id": "o1", "drop": "x"}}}},
 		RealtimeFallbackProvider: fakeProvider{pods: []PodSummary{{Namespace: "cci-b", Name: "pod-b"}}},
 		HistoricalProvider:       fakeProvider{pods: []PodSummary{{Namespace: "cci-c", Name: "pod-c"}}},
@@ -88,6 +99,54 @@ func TestPipelineRealtimeUsesCacheAndNormalizesPayload(t *testing.T) {
 	}
 	if gotPod.Annotations["platform.example.com/order-id"] != "o1" || gotPod.Annotations["drop"] != "" {
 		t.Fatalf("annotations were not allowlist-filtered: %+v", gotPod.Annotations)
+	}
+	if enrichment.Node == nil || enrichment.Node.Name != "gpu-node-1" {
+		t.Fatalf("node = %+v, want gpu-node-1", enrichment.Node)
+	}
+	if enrichment.Node.Labels["cloudnative.dc.com/lifeline-managed"] != "enable" || enrichment.Node.Labels["topology.kubernetes.io/zone"] != "zone-a" || enrichment.Node.Labels["secret"] != "" {
+		t.Fatalf("node labels were not allowlist-filtered: %+v", enrichment.Node.Labels)
+	}
+}
+
+func TestPipelineIncludesNodeLabelsWhenPodContextIsEmpty(t *testing.T) {
+	eventTime := time.Now().UTC()
+	event := &pb.HealthEvent{
+		NodeName:           "gpu-node-1",
+		CheckName:          "MountPointUnavailable",
+		GeneratedTimestamp: timestamppb.New(eventTime),
+	}
+	cloudEvent := &transformer.CloudEvent{Data: map[string]any{}}
+
+	pipeline, err := NewPipeline(Config{
+		Enabled:               true,
+		FailurePolicy:         FailurePolicyBestEffort,
+		NamespaceIncludeRegex: "^cci-.*",
+		NodeLabelAllowlist:    []string{"dc.com/osm.nodepool.fault"},
+		NodeProvider:          fakeNodeProvider{node: &NodeSummary{Name: "gpu-node-1", Labels: map[string]string{"dc.com/osm.nodepool.fault": "active", "secret": "drop"}}},
+		RealtimeProvider:      fakeProvider{pods: []PodSummary{}},
+		Now:                   func() time.Time { return eventTime.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline() error = %v", err)
+	}
+
+	result, err := pipeline.Enrich(context.Background(), event, cloudEvent, ProcessingModeStream)
+	if err != nil {
+		t.Fatalf("Enrich() error = %v", err)
+	}
+	if result.Drop {
+		t.Fatal("Drop = true, want false")
+	}
+
+	enrichment := cloudEvent.Data["enrichment"].(EnrichmentData)
+	if enrichment.Status != StatusEmpty {
+		t.Fatalf("Status = %q, want %q", enrichment.Status, StatusEmpty)
+	}
+	if enrichment.Node == nil || enrichment.Node.Labels["dc.com/osm.nodepool.fault"] != "active" {
+		t.Fatalf("node labels = %+v, want fault label", enrichment.Node)
+	}
+	if enrichment.Node.Labels["secret"] != "" {
+		t.Fatalf("secret node label should not be exported: %+v", enrichment.Node.Labels)
 	}
 }
 
