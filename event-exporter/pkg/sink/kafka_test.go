@@ -214,8 +214,11 @@ func TestKafkaSinkPublishesWrappedRecord(t *testing.T) {
 	if !ok {
 		t.Fatalf("extra = %#v", decoded["extra"])
 	}
-	if extra["event_id"] != event.ID || extra["node"] != "gpu-node-1" || extra["enrichment_status"] != "empty" {
+	if extra["event_id"] != event.ID || extra["node"] != "gpu-node-1" {
 		t.Fatalf("extra summary = %#v", extra)
+	}
+	if _, ok := extra["enrichment_status"]; ok {
+		t.Fatalf("extra.enrichment_status should not be present: %#v", extra["enrichment_status"])
 	}
 	if _, ok := extra["raw"].(map[string]any); !ok {
 		t.Fatalf("extra.raw = %#v", extra["raw"])

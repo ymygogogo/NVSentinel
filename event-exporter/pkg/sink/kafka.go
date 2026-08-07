@@ -194,7 +194,6 @@ func (s *KafkaSink) wrapEvent(event *transformer.CloudEvent) map[string]any {
 		"check_name":         ctx.CheckName,
 		"recommended_action": ctx.RecommendedAction,
 		"healthy":            ctx.Healthy,
-		"enrichment_status":  ctx.EnrichmentStatus,
 		extraRawField:        event,
 	}
 	return map[string]any{
@@ -224,12 +223,10 @@ type wrapperContext struct {
 	CheckName         string
 	RecommendedAction string
 	Healthy           bool
-	EnrichmentStatus  string
 }
 
 func wrapperTemplateContext(event *transformer.CloudEvent) wrapperContext {
 	healthEvent := mapValue(event.Data["healthEvent"])
-	enrichment := mapValue(event.Data["enrichment"])
 	metadata := mapValue(event.Data["metadata"])
 	return wrapperContext{
 		EventID:           event.ID,
@@ -241,7 +238,6 @@ func wrapperTemplateContext(event *transformer.CloudEvent) wrapperContext {
 		CheckName:         stringMapValue(healthEvent, "checkName"),
 		RecommendedAction: stringMapValue(healthEvent, "recommendedAction"),
 		Healthy:           boolMapValue(healthEvent, "isHealthy"),
-		EnrichmentStatus:  stringMapValue(enrichment, "status"),
 	}
 }
 
