@@ -182,7 +182,7 @@ func (he *HealthEventsAnnotationMap) GetEvent(
 
 func (he *HealthEventsAnnotationMap) findFirstMatch(event *protos.HealthEvent) (*protos.HealthEvent, bool) {
 	for storedKey, storedEvent := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+		if recoveryKeyMatchesEvent(storedKey, storedEvent, event) {
 			return storedEvent, true
 		}
 	}
@@ -253,8 +253,8 @@ func (he *HealthEventsAnnotationMap) getEventByCheck(
 // HasMatchingEntities checks if the event has any entities that match stored events
 // (using the same matching rules as GetEvent).
 func (he *HealthEventsAnnotationMap) HasMatchingEntities(event *protos.HealthEvent) bool {
-	for storedKey := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+	for storedKey, storedEvent := range he.Events {
+		if recoveryKeyMatchesEvent(storedKey, storedEvent, event) {
 			return true
 		}
 	}
@@ -286,8 +286,8 @@ func (he *HealthEventsAnnotationMap) RemoveEvent(event *protos.HealthEvent) int 
 
 	keysToRemove := make([]HealthEventKey, 0)
 
-	for storedKey := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+	for storedKey, storedEvent := range he.Events {
+		if recoveryKeyMatchesEvent(storedKey, storedEvent, event) {
 			keysToRemove = append(keysToRemove, storedKey)
 		}
 	}
@@ -362,20 +362,7 @@ func (he *HealthEventsAnnotationMap) GetAllCheckNames() []string {
 // MarshalJSON converts the map to a JSON-serializable format (slice of events)
 // Deduplicates events since multiple entity keys may point to the same event object
 func (he *HealthEventsAnnotationMap) MarshalJSON() ([]byte, error) {
-	// Use a map to deduplicate event pointers
-	// Multiple entities can reference the same event object, we only want unique events
-	seen := make(map[*protos.HealthEvent]bool)
-	events := make([]*protos.HealthEvent, 0, len(he.Events))
-
-	for _, event := range he.Events {
-		if !seen[event] {
-			seen[event] = true
-
-			events = append(events, event)
-		}
-	}
-
-	return json.Marshal(events)
+	return json.Marshal(he.remainingEvents())
 }
 
 // UnmarshalJSON reconstructs the map from JSON data (slice of events)
