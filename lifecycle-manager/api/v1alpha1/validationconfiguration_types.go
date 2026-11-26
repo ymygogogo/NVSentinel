@@ -119,6 +119,21 @@ type SchedulingGateConfig struct {
 
 	// +optional
 	Taints []TaintConfig `json:"taints,omitempty"`
+
+	// Labels lists owned rule labels to release with the validation scheduling gate.
+	// +optional
+	Labels []LabelConfig `json:"labels,omitempty"`
+}
+
+// LabelConfig permits release of an exact rule label after validation.
+type LabelConfig struct {
+	// Key is the label key.
+	Key string `json:"key"`
+	// Value is the exact label value, including an empty value.
+	Value string `json:"value"`
+	// Remove enables deletion of a label whose handoff ownership still matches.
+	// +optional
+	Remove bool `json:"remove,omitempty"`
 }
 
 // CordonConfig controls whether nodes are uncordoned after validation.

@@ -59,6 +59,9 @@ extraEnv: []
 # to automatically generate the lifecycle-manager ClusterRole
 config:
   schedulingGate:
+    # Remove only labels handed off by fault-quarantine with proven ownership.
+    # Example: [{key: example.com/fault, value: active, remove: true}]
+    labels: []
     cordon:
       remove: true
       labelPrefix: "k8saas.nvidia.com/"

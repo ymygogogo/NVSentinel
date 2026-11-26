@@ -17,12 +17,65 @@ package controller
 import (
 	"testing"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
+
+// TestReleaseNodeFromSession_LabelHandoff_ReleasesOnlyAtSessionEnd checks atomic gate mutation and retries.
+func TestReleaseNodeFromSession_LabelHandoff_ReleasesOnlyAtSessionEnd(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "failed"}[failed], func(t *testing.T) {
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{UID: "node-uid", Labels: map[string]string{}},
+				Spec: corev1.NodeSpec{Unschedulable: true, Taints: []corev1.Taint{{Key: "fault", Value: "active", Effect: corev1.TaintEffectNoSchedule}}}}
+			require.NoError(t, annotationutil.TrackRuleLabels(node, map[string]string{"fault": "active"}, true))
+			node.Labels["fault"] = "active"
+			raw, err := annotationutil.SnapshotRuleLabels(node)
+			require.NoError(t, err)
+			require.NoError(t, annotationutil.BindRuleLabels(node, "first", "first-uid", raw))
+			session, err := annotationutil.MarshalValidationSession([]annotationutil.ValidationSessionEntry{
+				{Name: "first"}, {Name: "second", Failed: failed},
+			})
+			require.NoError(t, err)
+			node.Annotations[annotationutil.ValidationSessionKey] = session
+			gate := &v1alpha1.SchedulingGateConfig{
+				Labels: []v1alpha1.LabelConfig{{Key: "fault", Value: "active", Remove: true}},
+				Taints: []v1alpha1.TaintConfig{{Key: "fault", Value: "active", Effect: corev1.TaintEffectNoSchedule, Remove: true}},
+			}
+			gate.Cordon.Remove = true
+			request := &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "first", UID: "first-uid", Annotations: map[string]string{annotationutil.RuleLabelHandoffKey: raw}}}
+			require.NoError(t, checkRuleLabelHandoff(node, request))
+			_, err = releaseNodeFromSession(node, "first", nil, gate)
+			require.NoError(t, err)
+			require.Equal(t, "active", node.Labels["fault"])
+			require.True(t, node.Spec.Unschedulable)
+			require.Len(t, node.Spec.Taints, 1)
+			// The failed entry is released only through the existing explicit deletion/supersession policy.
+			_, err = releaseNodeFromSession(node, "second", nil, gate)
+			require.NoError(t, err)
+			require.NotContains(t, node.Labels, "fault")
+			require.False(t, node.Spec.Unschedulable)
+			require.Empty(t, node.Spec.Taints)
+			require.NoError(t, checkRuleLabelHandoff(node, request))
+			changed, err := releaseNodeFromSession(node, "first", nil, gate)
+			require.NoError(t, err)
+			require.False(t, changed)
+		})
+	}
+}
+
+// TestCheckRuleLabelHandoff_UnboundRequest_BlocksActiveSession checks interrupted handoff recovery.
+func TestCheckRuleLabelHandoff_UnboundRequest_BlocksActiveSession(t *testing.T) {
+	session, err := annotationutil.MarshalValidationSession([]annotationutil.ValidationSessionEntry{{Name: "request"}})
+	require.NoError(t, err)
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{annotationutil.ValidationSessionKey: session}}}
+	request := &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "request", UID: "request-uid", Annotations: map[string]string{annotationutil.RuleLabelHandoffKey: "snapshot"}}}
+	require.Error(t, checkRuleLabelHandoff(node, request))
+}
 
 func TestReadinessViolations_Message_NamesEveryViolationInOrder(t *testing.T) {
 	tests := []struct {

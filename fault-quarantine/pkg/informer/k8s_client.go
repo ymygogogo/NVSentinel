@@ -124,12 +124,7 @@ func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Cont
 		return nil
 	}
 
-	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
-	}
-
-	return nil
+	return c.createValidationRequestWithLabels(ctx, gvr, obj)
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
@@ -381,6 +376,10 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 			labelsToApply, err := labelsWithSessionWinners(node, labels)
 			if err != nil {
 				return fmt.Errorf("failed to get merged applied labels on node %s: %w", nodename, err)
+			}
+
+			if err := c.trackAppliedRuleLabels(node, !alreadyQuarantined); err != nil {
+				return fmt.Errorf("track rule labels on node %s: %w", nodename, err)
 			}
 
 			c.applyLabels(ctx, node, labelsToApply, nodename)
@@ -759,6 +758,12 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
+		if !c.DryRunMode {
+			if err := annotationutil.ForgetRuleLabels(node, labelsToRemove); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}
 
@@ -943,6 +948,10 @@ func (c *FaultQuarantineClient) updateNodeAnnotationsForManualUncordon(
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
 	}
+
+	// Manual intervention transfers label control to the operator. Existing
+	// validation bindings can no longer authorize deletion of these labels.
+	delete(node.Annotations, annotationutil.RuleLabelOwnershipKey)
 
 	for _, key := range annotationsToRemove {
 		delete(node.Annotations, key)

@@ -22,11 +22,26 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
+
+// TestDerive_LabelHandoff_RetainsProtocolAnnotations checks the cache patch baseline.
+func TestDerive_LabelHandoff_RetainsProtocolAnnotations(t *testing.T) {
+	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+		annotationutil.RuleLabelOwnershipKey: "ownership",
+		annotationutil.RuleLabelBindingsKey:  "bindings",
+		"example.com/unrelated":              "discard",
+	}}}
+	_, err := Derive(nodeRuleConfig(shippedPredicate), testOperational()).Transform()(node)
+	require.NoError(t, err)
+	require.Equal(t, "ownership", node.Annotations[annotationutil.RuleLabelOwnershipKey])
+	require.Equal(t, "bindings", node.Annotations[annotationutil.RuleLabelBindingsKey])
+	require.NotContains(t, node.Annotations, "example.com/unrelated")
+}
 
 const (
 	testGPULabelKey   = "nvidia.com/gpu.present"

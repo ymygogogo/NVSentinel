@@ -209,6 +209,10 @@ func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx cont
 		var violation *readinessViolation
 
 		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			if err := checkRuleLabelHandoff(node, validationRequest); err != nil {
+				return false, err
+			}
+
 			criterion, err := evaluateCriteria(ctx, r.Client, node, r.Config.Validation.Spec.ReadinessCriteria,
 				r.ReadinessPrograms, r.ResourceSliceWatch.Enabled)
 			if err != nil {
@@ -273,6 +277,10 @@ func (r *ValidationRequestReconciler) releaseNodesFromDeletedRequest(ctx context
 		retainedCriterion := ""
 
 		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			if err := checkRuleLabelHandoff(node, validationRequest); err != nil {
+				return false, err
+			}
+
 			schedulingGate, criterion, err := r.schedulingGateForDeletion(ctx, node, validationRequest.Name)
 			if err != nil {
 				return false, err
@@ -323,6 +331,24 @@ func (r *ValidationRequestReconciler) schedulingGateForDeletion(ctx context.Cont
 	return r.Config.Validation.Spec.SchedulingGate, "", nil
 }
 
+// checkRuleLabelHandoff permits retries after an atomic release removed the
+// session entry and its bindings, but rejects an incomplete active handoff.
+func checkRuleLabelHandoff(node *corev1.Node, request *v1alpha1.ValidationRequest) error {
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.Name == request.Name {
+			return annotationutil.CheckRuleLabelBinding(node, request.Name, string(request.UID),
+				request.Annotations[annotationutil.RuleLabelHandoffKey])
+		}
+	}
+
+	return nil
+}
+
 func releaseNodeFromSession(node *corev1.Node, validationRequestName string, supersedeTests []string,
 	schedulingGate *v1alpha1.SchedulingGateConfig) (bool, error) {
 	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
@@ -355,11 +381,37 @@ func releaseNodeFromSession(node *corev1.Node, validationRequestName string, sup
 		changed = true
 	}
 
-	if sessionBecameEmpty && applySchedulingGateRelease(node, schedulingGate) {
-		changed = true
+	if sessionBecameEmpty {
+		gatesChanged, err := releaseOwnedSchedulingGates(node, schedulingGate)
+		if err != nil {
+			return false, err
+		}
+
+		changed = gatesChanged || changed
 	}
 
 	return changed, nil
+}
+
+func releaseOwnedSchedulingGates(node *corev1.Node, gate *v1alpha1.SchedulingGateConfig) (bool, error) {
+	if gate == nil {
+		return false, nil
+	}
+
+	configured := make(map[string]string)
+
+	for _, label := range gate.Labels {
+		if label.Remove {
+			configured[label.Key] = label.Value
+		}
+	}
+
+	labelsChanged, err := annotationutil.ReleaseRuleLabels(node, configured)
+	if err != nil {
+		return false, fmt.Errorf("release validation rule labels: %w", err)
+	}
+
+	return applySchedulingGateRelease(node, gate) || labelsChanged, nil
 }
 
 func markNodeSessionEntryFailed(node *corev1.Node, validationRequestName string) (bool, error) {

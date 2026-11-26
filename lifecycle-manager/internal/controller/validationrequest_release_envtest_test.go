@@ -345,6 +345,54 @@ func expectAttemptFailedReadiness(vr v1alpha1.ValidationRequest, nodeNames ...st
 }
 
 var _ = Describe("Validation release readiness check", func() {
+	DescribeTable("releases handed-off labels with gates and protects a new owner on patch conflict",
+		func(newOwner bool) {
+			fixture := newReleaseFixture("validation-label-handoff", releaseFixtureOptions{}, "release-label-handoff")
+			vr := fixture.running()
+			node := getNode(ctx, fixture.nodeNames[0])
+			Expect(annotationutil.TrackRuleLabels(&node, map[string]string{"example.com/fault": "active"}, true)).To(Succeed())
+			if node.Labels == nil {
+				node.Labels = map[string]string{}
+			}
+			node.Labels["example.com/fault"] = "active"
+			raw, err := annotationutil.SnapshotRuleLabels(&node)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotationutil.BindRuleLabels(&node, vr.Name, string(vr.UID), raw)).To(Succeed())
+			Expect(k8sClient.Update(ctx, &node)).To(Succeed())
+			if vr.Annotations == nil {
+				vr.Annotations = map[string]string{}
+			}
+			vr.Annotations[annotationutil.RuleLabelHandoffKey] = raw
+			Expect(k8sClient.Update(ctx, &vr)).To(Succeed())
+			fixture.config.Validation.Spec.SchedulingGate.Labels = []v1alpha1.LabelConfig{
+				{Key: "example.com/fault", Value: "active", Remove: true},
+			}
+			if newOwner {
+				fixture.beforeReleasePatch(node.Name, func(ctx context.Context) error {
+					latest := getNode(ctx, node.Name)
+					if err := annotationutil.TrackRuleLabels(&latest, map[string]string{"example.com/fault": "active"}, true); err != nil {
+						return err
+					}
+					return k8sClient.Update(ctx, &latest)
+				})
+			}
+			Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
+			vr = fixture.reconcile()
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseSucceeded))
+			node = getNode(ctx, node.Name)
+			Expect(node.Spec.Unschedulable).To(BeFalse())
+			Expect(node.Spec.Taints).NotTo(ContainElement(releaseGateTaint))
+			if newOwner {
+				Expect(node.Labels["example.com/fault"]).To(Equal("active"))
+				Expect(fixture.client.conflicts).To(BeNumerically(">", 0))
+			} else {
+				Expect(node.Labels).NotTo(HaveKey("example.com/fault"))
+			}
+		},
+		Entry("owned label", false),
+		Entry("new same-value owner after a real API conflict", true),
+	)
+
 	DescribeTable("retains the gate and fails the request when a quarantine starts before release",
 		func(timing, annotation string) {
 			nodeName := "release-" + timing

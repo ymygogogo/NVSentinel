@@ -21,6 +21,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestBuildUncordonLabelsToRemove_ValidationHandoff_RetainsRuleLabels checks both cleanup paths.
+func TestBuildUncordonLabelsToRemove_ValidationHandoff_RetainsRuleLabels(t *testing.T) {
+	r := &Reconciler{cordonedByLabelKey: "cordoned-by"}
+	labels := []config.Label{{Key: "example.com/fault", Value: "active"}}
+	assert.Contains(t, r.buildUncordonLabelsToRemove(labels, false), "example.com/fault")
+	assert.NotContains(t, r.buildUncordonLabelsToRemove(labels, true), "example.com/fault")
+	assert.NotContains(t, r.buildUncordonLabelsToRemove(labels, true), "cordoned-by")
+}
+
 func TestSelectRuleLabelUsesPriorityThenConfigurationOrder(t *testing.T) {
 	selected := map[string]selectedLabel{}
 

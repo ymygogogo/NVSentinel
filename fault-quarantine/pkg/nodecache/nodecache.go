@@ -36,6 +36,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	nodefields "github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -113,6 +114,9 @@ func nodeRuleExpressions(cfg config.TomlConfig) []string {
 
 // addOperational records the keys that do not come from any expression.
 func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
+	k.inner.AddAnnotation(annotationutil.RuleLabelOwnershipKey)
+	k.inner.AddAnnotation(annotationutil.RuleLabelBindingsKey)
+
 	for _, key := range common.QuarantineAnnotationKeys {
 		k.inner.AddAnnotation(key)
 	}

@@ -2248,10 +2248,10 @@ func (r *Reconciler) buildUncordonLabelsToRemove(ruleLabelsToRemove []config.Lab
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 	if !validationRequestCreated {
 		labelsToRemove = append(labelsToRemove, r.cordonedByLabelKey, r.cordonedReasonLabelKey, r.cordonedTimestampLabelKey)
-	}
 
-	for _, label := range ruleLabelsToRemove {
-		labelsToRemove = append(labelsToRemove, label.Key)
+		for _, label := range ruleLabelsToRemove {
+			labelsToRemove = append(labelsToRemove, label.Key)
+		}
 	}
 
 	return labelsToRemove

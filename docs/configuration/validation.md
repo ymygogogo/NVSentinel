@@ -363,6 +363,8 @@ status:
 | cordon.labelPrefix | string | The prefix for the cordon-by, cordon-reason and cordon-timestamp labels, and the matching uncordon-* labels, that the controller writes when cordon.remove is true |
 | taints[].key, .value, .effect | string | Identifies a taint that test pods must tolerate during validation. The controller does not apply these taints. It expects another process to apply them before the creation of the ValidationRequest. Every test pod automatically tolerates node.kubernetes.io/unschedulable and every taint in this list, whether or not the taint is present on the node. The default k8s-job-template.yaml also tolerates every NoExecute taint |
 | taints[].remove | bool | Whether the controller removes this specific taint when validation completes. For a taint that exists for reasons other than a validation gate, set false |
+| labels[].key, .value | string | Identifies a rule label handed off by fault-quarantine. Both must match exactly. The controller does not apply labels |
+| labels[].remove | bool | Whether to remove a matching label at the same release point as taints and cordon. Defaults to false. Removal also requires proven ownership of the current label. The default labels list is empty |
 
 ### fault-quarantine.validation
 
@@ -376,6 +378,12 @@ status:
 | partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
 
 When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint that it applied during the quarantine session. After that, fault-quarantine does not track them. When validation passes, lifecycle-manager releases them.
+
+Fault-quarantine also retains rule labels when it creates a ValidationRequest. List each label that lifecycle-manager must remove in `schedulingGate.labels`, with its exact key and value and `remove: true`. Labels not configured for removal remain on the node. Pending, failed, and readiness-blocked validation retains the labels. Another outstanding request also blocks release.
+
+Label release requires the Node UID, request UID, and label ownership token to match the handoff. A pre-existing label, an unknown ownership record, an externally changed value, or a newer quarantine session is not deleted. Legacy requests without a handoff annotation do not authorize label removal. Manual uncordon or untaint cleanup invalidates FQ label ownership and leaves preserved labels under operator control.
+
+Upgrade and configure lifecycle-manager before fault-quarantine. Do not downgrade lifecycle-manager while label handoffs are pending. Old controllers ignore the additive annotations and cannot release retained labels. If ownership is missing or invalid, check the Node and ValidationRequest annotations before manual cleanup. Never remove a label that belongs to an active fault or another controller.
 
 For this reason, list every taint that a fault-quarantine rule-set applies in lifecycle-manager schedulingGate.taints. If a taint is not in the list, lifecycle-manager never removes it. Test pods also do not tolerate such a taint, unless the provider template tolerates it. For example, the default k8s-job-template.yaml tolerates NoExecute taints.
 
